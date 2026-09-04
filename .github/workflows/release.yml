@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v1.0.0) -- must already exist"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # The release is created once, up front. Letting the build jobs create it
+  # themselves races: they run concurrently, both find no release for the
+  # tag, and both try to create it -- so one fails, or you end up with a
+  # release missing an asset.
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+
+  release:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            asset: dist/Ticker.exe
+          - os: macos-latest
+            asset: dist/Ticker.zip
+          - os: ubuntu-latest
+            asset: dist/Ticker
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Without an explicit ref, a workflow_dispatch run checks out the
+          # branch it was launched from and attaches *that* code's binaries
+          # to the tag's release.
+          ref: ${{ inputs.tag || github.ref }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Tk (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Build
+        run: python build.py
+
+      - name: Zip the macOS app bundle
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent dist/Ticker.app dist/Ticker.zip
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          files: ${{ matrix.asset }}

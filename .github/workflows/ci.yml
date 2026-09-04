@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    # There's no physical strap in CI on any OS, so build.py only runs
+    # the hardware-independent test suite (parsing, storage, config,
+    # imports) -- not a live BLE connection.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact-name: Ticker-windows
+            artifact-path: dist/Ticker.exe
+          - os: macos-latest
+            artifact-name: Ticker-macos
+            # The .zip, not the .app: upload-artifact re-zips a directory
+            # without preserving the executable bit or symlinks, which
+            # leaves the downloaded bundle unable to launch.
+            artifact-path: dist/Ticker.zip
+          - os: ubuntu-latest
+            artifact-name: Ticker-linux
+            artifact-path: dist/Ticker
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Tk (Linux)
+        if: runner.os == 'Linux'
+        # The runner image's Python links Tk dynamically, so importing
+        # tkinter (hrm_app does, at import time) needs the Tcl/Tk runtime
+        # present. Windows and macOS ship it with Python.
+        run: sudo apt-get update && sudo apt-get install -y python3-tk
+
+      - name: Build (install deps, run tests, package app)
+        run: python build.py
+
+      - name: Zip the macOS app bundle
+        if: runner.os == 'macOS'
+        run: ditto -c -k --keepParent dist/Ticker.app dist/Ticker.zip
+
+      - name: Upload built app
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact-name }}
+          path: ${{ matrix.artifact-path }}
