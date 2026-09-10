@@ -1,19 +1,12 @@
 """
-BLE heart rate streaming for standard-profile chest straps (Garmin HRM-Dual/
-Pro/Fit/600, and most others). Runs its own asyncio event loop on a
-background thread and pushes messages onto a thread-safe queue.Queue so a
-GUI (or anything else) can consume them without touching asyncio at all.
+BLE heart rate source for anything speaking the standard Heart Rate Service
+(0x180D): chest straps (Garmin HRM-Dual/Pro/Fit/600, Polar, Wahoo...) and
+Garmin watches with Broadcast Heart Rate switched on, which advertise the
+same service and are read exactly the same way.
 
-Message shapes put on the queue (all dicts):
-
-    {"type": "status", "status": "searching" | "connected" | "reconnecting"
-                                  | "stopped",
-     "device_name": str | None, "device_address": str | None}
-
-    {"type": "sample", "timestamp": <ISO8601 UTC str>, "hr": int,
-     "rr_intervals_ms": [float, ...]}
-
-    {"type": "error", "message": str}
+Runs its own asyncio event loop on a background thread and pushes messages
+onto a thread-safe queue.Queue -- see hr_source for the message protocol --
+so a GUI (or anything else) can consume them without touching asyncio.
 """
 
 from __future__ import annotations
@@ -21,10 +14,11 @@ from __future__ import annotations
 import asyncio
 import queue
 import threading
-from datetime import datetime, timezone
 from typing import Optional
 
 from bleak import BleakClient, BleakScanner
+
+from hr_source import HRSource
 
 HEART_RATE_SERVICE_UUID = "0000180d-0000-1000-8000-00805f9b34fb"
 HEART_RATE_MEASUREMENT_UUID = "00002a37-0000-1000-8000-00805f9b34fb"
@@ -79,8 +73,8 @@ def parse_hr_measurement(data: bytearray):
     return hr, energy_expended, rr_intervals_ms
 
 
-class HRStreamer:
-    """Connects to a BLE heart rate strap and streams samples to a queue.
+class BLEHRSource(HRSource):
+    """Connects to a BLE heart rate device and streams samples to a queue.
 
     Runs entirely on its own background thread (own asyncio event loop) so it
     can be driven from a synchronous GUI. Call start() once; call stop() to
@@ -90,8 +84,13 @@ class HRStreamer:
     def __init__(self, out_queue: "queue.Queue", address: Optional[str] = None,
                  scan_timeout: float = SCAN_TIMEOUT_SEC,
                  reconnect_delay: float = RECONNECT_DELAY_SEC):
-        self.out_queue = out_queue
+        super().__init__(out_queue)
         self.address = address
+        # A pinned address means "this device or nothing". self.address is
+        # also overwritten with whatever we discovered, to make reconnects
+        # cheap -- and that remembered value must stay a hint that falls
+        # back to scanning, not a pin. Only the caller can pin.
+        self._pinned = address is not None
         self.scan_timeout = scan_timeout
         self.reconnect_delay = reconnect_delay
         self._thread: Optional[threading.Thread] = None
@@ -171,21 +170,26 @@ class HRStreamer:
             return task.result()
         return _STOPPED
 
-    def _emit(self, msg: dict):
-        self.out_queue.put(msg)
-
     async def _find_device(self):
         if self.address:
+            self.emit_status("searching", message=f"Looking for {self.address}…")
             device = await BleakScanner.find_device_by_address(
                 self.address, timeout=self.scan_timeout
             )
             if device:
                 return device
+            if self._pinned:
+                # Falling through to the general scan here would quietly
+                # connect to whatever *other* heart rate device is in range
+                # -- the gym's, the neighbour's -- which is the one thing
+                # pinning an address is meant to prevent.
+                self.emit_error(
+                    f"Pinned device {self.address} not found. "
+                    f"Unset HRM_DEVICE_ADDRESS to use any strap in range."
+                )
+                return None
 
-        self._emit({
-            "type": "status", "status": "searching",
-            "device_name": None, "device_address": None,
-        })
+        self.emit_status("searching")
         devices_and_adv = await BleakScanner.discover(
             timeout=self.scan_timeout, return_adv=True
         )
@@ -206,12 +210,13 @@ class HRStreamer:
             try:
                 device = await self._await_or_stop(self._find_device())
             except Exception as exc:  # adapter missing, BLE turned off, etc.
-                self._emit({"type": "error", "message": f"Scan failed: {exc}"})
+                self.emit_error(f"Scan failed: {exc}")
                 device = None
             if device is _STOPPED:
                 break
             if device is None:
-                self._emit({"type": "error", "message": "No heart rate monitor found nearby."})
+                if not self._pinned:  # _find_device already said why if pinned
+                    self.emit_error("No heart rate monitor found nearby.")
                 await self._sleep_or_stop(self.reconnect_delay)
                 continue
 
@@ -219,20 +224,15 @@ class HRStreamer:
             try:
                 await self._stream_from(device)
             except Exception as exc:  # connection drop, adapter hiccup, etc.
-                self._emit({"type": "error", "message": f"Connection lost: {exc}"})
+                self.emit_error(f"Connection lost: {exc}")
 
             if self._stop_event.is_set():
                 break
-            self._emit({
-                "type": "status", "status": "reconnecting",
-                "device_name": device.name, "device_address": device.address,
-            })
+            self.emit_status("reconnecting", device_name=device.name,
+                             device_address=device.address)
             await self._sleep_or_stop(self.reconnect_delay)
 
-        self._emit({
-            "type": "status", "status": "stopped",
-            "device_name": None, "device_address": None,
-        })
+        self.emit_status("stopped")
 
     async def _stream_from(self, device):
         disconnected = asyncio.Event()
@@ -249,10 +249,8 @@ class HRStreamer:
             return
 
         try:
-            self._emit({
-                "type": "status", "status": "connected",
-                "device_name": device.name, "device_address": device.address,
-            })
+            self.emit_status("connected", device_name=device.name,
+                             device_address=device.address)
 
             def handle_notification(_sender, data: bytearray):
                 try:
@@ -262,15 +260,9 @@ class HRStreamer:
                     # exception is swallowed or merely logged by the backend
                     # and never reaches the app -- so report it ourselves
                     # and keep the stream running.
-                    self._emit({"type": "error",
-                                "message": f"Bad heart rate packet: {exc}"})
+                    self.emit_error(f"Bad heart rate packet: {exc}")
                     return
-                self._emit({
-                    "type": "sample",
-                    "timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    "hr": hr,
-                    "rr_intervals_ms": rr_intervals,
-                })
+                self.emit_sample(hr, rr_intervals)
 
             await client.start_notify(HEART_RATE_MEASUREMENT_UUID, handle_notification)
             await self._await_or_stop(disconnected.wait())

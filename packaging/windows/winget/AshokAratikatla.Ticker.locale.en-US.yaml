@@ -1,0 +1,26 @@
+# winget locale manifest (the text users see in `winget show`).
+PackageIdentifier: AshokAratikatla.Ticker
+PackageVersion: 0.2.0
+PackageLocale: en-US
+Publisher: Ashok Aratikatla
+PublisherUrl: https://github.com/ashokaratikatla
+PublisherSupportUrl: https://github.com/ashokaratikatla/ticker/issues
+PackageName: Ticker
+PackageUrl: https://github.com/ashokaratikatla/ticker
+License: MIT
+LicenseUrl: https://github.com/ashokaratikatla/ticker/blob/main/LICENSE
+ShortDescription: Local-first health data logger for heart rate and HRV.
+Description: |-
+  Ticker records heart rate and beat-to-beat intervals from any standard
+  Bluetooth chest strap or broadcasting watch, derives HRV, and stores
+  everything in one local SQLite file. It can also pull sleep, SpO2 and
+  activity from vendor APIs. Nothing leaves the machine unless you send it
+  somewhere yourself.
+Tags:
+  - heart-rate
+  - hrv
+  - bluetooth
+  - health
+  - quantified-self
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

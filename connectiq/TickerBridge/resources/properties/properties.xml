@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<properties>
+    <!-- Blank on purpose: there is no sensible default IP, and the app says
+         "Set the URL in settings" until this is filled in. -->
+    <property id="endpoint" type="string"></property>
+    <property id="token" type="string"></property>
+    <property id="intervalSec" type="number">2</property>
+    <property id="deviceName" type="string">Garmin watch</property>
+</properties>

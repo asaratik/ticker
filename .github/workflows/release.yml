@@ -12,6 +12,9 @@ on:
 
 permissions:
   contents: write
+  # Azure Artifact Signing authenticates with an OIDC federated credential,
+  # so there is no long-lived secret to store or rotate (section 12.7).
+  id-token: write
 
 jobs:
   # The release is created once, up front. Letting the build jobs create it
@@ -32,13 +35,21 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            asset: dist/Ticker.exe
           - os: macos-latest
-            asset: dist/Ticker.zip
           - os: ubuntu-latest
-            asset: dist/Ticker
 
     runs-on: ${{ matrix.os }}
+
+    env:
+      # Signing is skipped when the Azure credentials aren't configured, so
+      # a fork can still cut a release -- unsigned, and honest about it --
+      # rather than failing on a secret it was never given.
+      SIGNING_ENABLED: ${{ secrets.AZURE_CLIENT_ID != '' }}
+      # The same bargain on macOS: no Developer ID certificate means an
+      # unsigned, unnotarized .app that the runner still builds and
+      # publishes. Notarization needs an Apple Developer Program membership
+      # (section 12.5), which a fork will not have.
+      MACOS_SIGNING_ENABLED: ${{ secrets.MACOS_CERTIFICATE != '' }}
 
     steps:
       - uses: actions/checkout@v4
@@ -52,19 +63,231 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Derive the version from the tag
+        shell: bash
+        run: echo "TICKER_VERSION=${TAG#v}" >> "$GITHUB_ENV"
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+
       - name: Install Tk (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y python3-tk
 
-      - name: Build
+      - name: Build (onedir)
         run: python build.py
+
+      # -- Windows: sign the bundle, wrap it, sign the wrapper -------------
+
+      - name: Azure login (OIDC)
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign every binary in the bundle
+        # Not just the top-level exe (section 12.3): an unsigned DLL beside a
+        # signed exe is exactly what a scanner looks for.
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files-folder: dist/Ticker
+          files-folder-filter: exe,dll,pyd
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            choco install innosetup --no-progress -y
+          }
+
+      - name: Build the installer
+        if: runner.os == 'Windows'
+        run: python build.py --skip-tests --installer --version "$env:TICKER_VERSION"
+
+      - name: Sign the installer
+        # The installer is the file people actually download, so it is the
+        # one whose signature SmartScreen reads first.
+        if: runner.os == 'Windows' && env.SIGNING_ENABLED == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          endpoint: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_CERT_PROFILE }}
+          files-folder: dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Fill in the winget manifests
+        # After signing, not before: signing changes the installer's bytes,
+        # and a wrong InstallerSha256 is the most common reason a winget
+        # submission fails validation. The tracked manifests keep their
+        # zeroed placeholder; the filled copies ride along with the release
+        # so a winget-pkgs PR is a copy of dist/winget/ and nothing else.
+        if: runner.os == 'Windows'
+        run: python build.py --winget-only --version "$env:TICKER_VERSION"
+
+      - name: Zip the Windows folder
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/Ticker -DestinationPath dist/Ticker.zip
+
+      # -- macOS: sign, notarize, staple, wrap, notarize again ------------
+      #
+      # Order matters and is not negotiable (section 12.5):
+      #
+      #   sign the app  ->  notarize it  ->  staple the ticket to it
+      #                 ->  build the .dmg from the stapled app
+      #                 ->  sign the .dmg  ->  notarize it  ->  staple it
+      #
+      # Two submissions, because two things get downloaded. Stapling the
+      # .dmg does not staple the app inside it, and the .zip is not a
+      # container that can carry a signature at all -- so the app has to
+      # hold its own ticket, and the disk image has to hold one too or
+      # Gatekeeper blocks it on open. Notarizing the .dmg first would be
+      # notarizing an image whose app is about to change.
+
+      - name: Import the Developer ID certificate
+        if: runner.os == 'macOS' && env.MACOS_SIGNING_ENABLED == 'true'
+        # A throwaway keychain, unlocked for this job only. Importing into
+        # the login keychain would leave the certificate on a shared runner.
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.MACOS_KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          echo "$MACOS_CERTIFICATE" | base64 --decode > /tmp/certificate.p12
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          # Without a timeout the keychain relocks mid-job and codesign
+          # starts failing with a useless "User interaction is not allowed".
+          security set-keychain-settings -t 3600 -u build.keychain
+          security import /tmp/certificate.p12 -k build.keychain \
+            -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" build.keychain
+          rm -f /tmp/certificate.p12
+
+      - name: Sign the app bundle
+        if: runner.os == 'macOS' && env.MACOS_SIGNING_ENABLED == 'true'
+        env:
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          # Inside out, not --deep: --deep is deprecated, and it applies the
+          # bundle's entitlements to every nested binary. Signing the inner
+          # dylibs first and the bundle last is what Apple documents, and it
+          # is the same rule as the Windows job's "sign every binary".
+          find dist/Ticker.app -type f \( -name "*.dylib" -o -name "*.so" \) \
+            -exec codesign --force --timestamp --options runtime \
+              --sign "$IDENTITY" {} +
+          codesign --force --timestamp --options runtime \
+            --entitlements packaging/macos/entitlements.plist \
+            --sign "$IDENTITY" dist/Ticker.app
+          codesign --verify --strict --verbose=2 dist/Ticker.app
+
+      - name: Notarize and staple the app
+        if: runner.os == 'macOS' && env.MACOS_SIGNING_ENABLED == 'true'
+        env:
+          APPLE_ID: ${{ secrets.MACOS_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.MACOS_APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          ditto -c -k --keepParent dist/Ticker.app /tmp/notarize-app.zip
+          ./packaging/macos/notarize.sh /tmp/notarize-app.zip
+          xcrun stapler staple dist/Ticker.app
+          xcrun stapler validate dist/Ticker.app
 
       - name: Zip the macOS app bundle
         if: runner.os == 'macOS'
+        # ditto rather than zip: it preserves the executable bit and the
+        # symlinks inside a .app, without which the bundle won't launch.
+        # After stapling, so the zipped app carries its notarization ticket
+        # and opens on a machine that has never been online.
         run: ditto -c -k --keepParent dist/Ticker.app dist/Ticker.zip
+
+      - name: Build the disk image
+        if: runner.os == 'macOS'
+        run: python build.py --dmg-only --version "$TICKER_VERSION"
+
+      - name: Sign, notarize and staple the disk image
+        if: runner.os == 'macOS' && env.MACOS_SIGNING_ENABLED == 'true'
+        env:
+          IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.MACOS_APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.MACOS_APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          DMG="dist/Ticker-${TICKER_VERSION}.dmg"
+          codesign --force --timestamp --sign "$IDENTITY" "$DMG"
+          # A .dmg is submitted as-is; only a .app has to be zipped first.
+          ./packaging/macos/notarize.sh "$DMG"
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+
+      # -- Linux ----------------------------------------------------------
+
+      - name: Tar the Linux folder
+        if: runner.os == 'Linux'
+        run: tar -C dist -czf dist/Ticker.tar.gz Ticker
+
+      - name: Install appimagetool
+        if: runner.os == 'Linux'
+        # Fetched here rather than inside build-appimage.sh so that pulling
+        # an executable off the internet is a visible, auditable step in the
+        # log instead of something a build script does quietly.
+        run: |
+          wget -q -O "$RUNNER_TEMP/appimagetool"             https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x "$RUNNER_TEMP/appimagetool"
+          echo "APPIMAGETOOL=$RUNNER_TEMP/appimagetool" >> "$GITHUB_ENV"
+
+      - name: Build the AppImage
+        if: runner.os == 'Linux'
+        # The runners have no FUSE, so appimagetool -- itself an AppImage --
+        # has to extract rather than mount itself.
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: python build.py --appimage-only --version "${TICKER_VERSION:-0.0.0}"
+
+      # -- hashes and upload ----------------------------------------------
+
+      - name: Recompute SHA256SUMS over the final artifacts
+        # The build wrote these before signing and packaging; both change the
+        # bytes, so the published hashes have to be taken afterwards
+        # (section 12.3). Done through build.py rather than shell so it is
+        # the same tested code path on all three runners -- and so it fails
+        # loudly rather than publishing an empty file if nothing was built.
+        run: python build.py --hashes-only
+
+      - name: Name the checksums per platform
+        shell: bash
+        run: mv dist/SHA256SUMS "dist/SHA256SUMS-${{ runner.os }}.txt"
 
       - name: Attach to release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.tag || github.ref_name }}
-          files: ${{ matrix.asset }}
+          files: |
+            dist/Ticker.zip
+            dist/Ticker-*-setup.exe
+            dist/Ticker-*.dmg
+            dist/Ticker.tar.gz
+            dist/Ticker-*.AppImage
+            dist/SHA256SUMS-*.txt
+            dist/winget/*.yaml
+          fail_on_unmatched_files: false

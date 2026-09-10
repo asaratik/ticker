@@ -65,6 +65,31 @@ def test_device_address_defaults_to_none(monkeypatch):
     assert reloaded.DEVICE_ADDRESS is None
 
 
+def test_source_defaults_to_ble(monkeypatch):
+    monkeypatch.delenv("HRM_SOURCE", raising=False)
+    assert importlib.reload(config).HR_SOURCE == "ble"
+
+
+def test_source_is_normalised(monkeypatch):
+    # It's matched against fixed names in hr_source.create_source, so "HTTP "
+    # and "http" have to end up as the same thing.
+    monkeypatch.setenv("HRM_SOURCE", "  HTTP ")
+    assert importlib.reload(config).HR_SOURCE == "http"
+
+
+def test_http_defaults_listen_on_every_interface(monkeypatch):
+    # 127.0.0.1 would only ever hear from this machine itself -- a watch on
+    # the LAN could never reach it.
+    for var in ("HRM_HTTP_HOST", "HRM_HTTP_PORT", "HRM_HTTP_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    reloaded = importlib.reload(config)
+    assert reloaded.HTTP_HOST == "0.0.0.0"
+    assert reloaded.HTTP_TOKEN is None
+    # Below the blocks Windows reserves for Hyper-V/WSL, which routinely
+    # cover 8600-9100 and make a port there unbindable.
+    assert reloaded.HTTP_PORT == 8476
+
+
 def test_font_family_differs_by_platform(monkeypatch):
     monkeypatch.setattr(config.sys, "platform", "win32")
     reloaded = importlib.reload(config)

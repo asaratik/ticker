@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Edited in Garmin Connect Mobile (Connect IQ Apps -> Ticker Bridge ->
+  Settings) or in the simulator, and pushed to the watch from there.
+-->
+<settings>
+    <setting propertyKey="@Properties.endpoint" title="@Strings.SettingEndpoint"
+             prompt="@Strings.SettingEndpointPrompt">
+        <settingConfig type="alphaNumeric" maxLength="120"/>
+    </setting>
+
+    <setting propertyKey="@Properties.token" title="@Strings.SettingToken"
+             prompt="@Strings.SettingTokenPrompt">
+        <settingConfig type="alphaNumeric" maxLength="64"/>
+    </setting>
+
+    <setting propertyKey="@Properties.intervalSec" title="@Strings.SettingInterval">
+        <settingConfig type="numeric" min="1" max="30"/>
+    </setting>
+
+    <setting propertyKey="@Properties.deviceName" title="@Strings.SettingDeviceName"
+             prompt="@Strings.SettingDeviceNamePrompt">
+        <settingConfig type="alphaNumeric" maxLength="32"/>
+    </setting>
+</settings>

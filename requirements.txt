@@ -1,1 +1,11 @@
 bleak>=1.0
+# TICKER_TZ names an IANA zone, and Windows ships no IANA tz database
+# for zoneinfo to read -- without this, rollup day bucketing silently
+# falls back to the OS zone there.
+tzdata>=2024.1; sys_platform == 'win32'
+
+# Pull-source tokens live in the OS keyring, never in the database or
+# environment. Optional: without it the BLE and HTTP
+# sources still work and pull sources report themselves unauthenticated.
+keyring>=24.0
+

@@ -1,0 +1,213 @@
+{
+  "uid": "ticker-overview",
+  "title": "Ticker — Overview",
+  "description": "Long-range view. Reads rollups_daily by default and raw observations on demand; the Resolution variable picks the table.",
+  "tags": ["ticker"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "",
+  "time": { "from": "now-90d", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "res",
+        "label": "Resolution",
+        "description": "daily reads rollups_daily; raw reads observations. Raw over a long window is a lot of points — that is what the rollups are for.",
+        "type": "custom",
+        "query": "daily,raw",
+        "current": { "text": "daily", "value": "daily" },
+        "options": [
+          { "text": "daily", "value": "daily", "selected": true },
+          { "text": "raw", "value": "raw", "selected": false }
+        ],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Observations",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT COUNT(*) AS \"Observations\" FROM observations",
+          "queryText": "SELECT COUNT(*) AS \"Observations\" FROM observations"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Days recorded",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT COUNT(DISTINCT day) AS \"Days\" FROM rollups_daily",
+          "queryText": "SELECT COUNT(DISTINCT day) AS \"Days\" FROM rollups_daily"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Sessions",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT COUNT(*) AS \"Sessions\" FROM sessions",
+          "queryText": "SELECT COUNT(*) AS \"Sessions\" FROM sessions"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Sources",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT COUNT(*) AS \"Sources\" FROM sources WHERE enabled = 1",
+          "queryText": "SELECT COUNT(*) AS \"Sources\" FROM sources WHERE enabled = 1"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Heart rate ($res)",
+      "description": "Daily average with the min/max band, or raw samples. A raw sample is a one-element aggregate, so avg = min = max there.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bpm",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 0, "showPoints": "never" }
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "bpm_min" },
+            "properties": [
+              { "id": "custom.lineWidth", "value": 1 },
+              { "id": "custom.fillBelowTo", "value": "bpm_max" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "semi-dark-blue" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "bpm_max" },
+            "properties": [
+              { "id": "custom.lineWidth", "value": 1 },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "semi-dark-blue" } }
+            ]
+          }
+        ]
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT time, bpm_avg, bpm_min, bpm_max FROM (\n  SELECT CAST(strftime('%s', o.ts) AS INTEGER) * 1000 AS time,\n         o.value AS bpm_avg, o.value AS bpm_min, o.value AS bpm_max\n  FROM observations o JOIN metrics m ON m.id = o.metric_id\n  WHERE '$res' = 'raw'\n    AND m.name = 'heart_rate_bpm'\n    AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n    AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'\n  UNION ALL\n  SELECT CAST(strftime('%s', r.day || 'T12:00:00Z') AS INTEGER) * 1000 AS time,\n         r.avg_value, r.min_value, r.max_value\n  FROM rollups_daily r JOIN metrics m ON m.id = r.metric_id\n  WHERE '$res' = 'daily'\n    AND m.name = 'heart_rate_bpm'\n    AND r.day >= strftime('%Y-%m-%d', $__from / 1000.0, 'unixepoch')\n    AND r.day <= strftime('%Y-%m-%d', $__to   / 1000.0, 'unixepoch')\n)\nORDER BY time",
+          "queryText": "SELECT time, bpm_avg, bpm_min, bpm_max FROM (\n  SELECT CAST(strftime('%s', o.ts) AS INTEGER) * 1000 AS time,\n         o.value AS bpm_avg, o.value AS bpm_min, o.value AS bpm_max\n  FROM observations o JOIN metrics m ON m.id = o.metric_id\n  WHERE '$res' = 'raw'\n    AND m.name = 'heart_rate_bpm'\n    AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n    AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'\n  UNION ALL\n  SELECT CAST(strftime('%s', r.day || 'T12:00:00Z') AS INTEGER) * 1000 AS time,\n         r.avg_value, r.min_value, r.max_value\n  FROM rollups_daily r JOIN metrics m ON m.id = r.metric_id\n  WHERE '$res' = 'daily'\n    AND m.name = 'heart_rate_bpm'\n    AND r.day >= strftime('%Y-%m-%d', $__from / 1000.0, 'unixepoch')\n    AND r.day <= strftime('%Y-%m-%d', $__to   / 1000.0, 'unixepoch')\n)\nORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "HRV (RMSSD), daily average",
+      "description": "Derived from RR intervals in the ingest pipeline — no source sends this directly.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 13 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 10, "showPoints": "auto" }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT CAST(strftime('%s', r.day || 'T12:00:00Z') AS INTEGER) * 1000 AS time,\n       r.avg_value AS rmssd\nFROM rollups_daily r JOIN metrics m ON m.id = r.metric_id\nWHERE m.name = 'hrv_rmssd_ms'\n  AND r.day >= strftime('%Y-%m-%d', $__from / 1000.0, 'unixepoch')\n  AND r.day <= strftime('%Y-%m-%d', $__to   / 1000.0, 'unixepoch')\nORDER BY time",
+          "queryText": "SELECT CAST(strftime('%s', r.day || 'T12:00:00Z') AS INTEGER) * 1000 AS time,\n       r.avg_value AS rmssd\nFROM rollups_daily r JOIN metrics m ON m.id = r.metric_id\nWHERE m.name = 'hrv_rmssd_ms'\n  AND r.day >= strftime('%Y-%m-%d', $__from / 1000.0, 'unixepoch')\n  AND r.day <= strftime('%Y-%m-%d', $__to   / 1000.0, 'unixepoch')\nORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Samples per day",
+      "description": "How much data each day actually holds — a quick way to spot a strap that stopped reporting.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 13 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "drawStyle": "bars", "lineWidth": 1, "fillOpacity": 60 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT CAST(strftime('%s', r.day || 'T12:00:00Z') AS INTEGER) * 1000 AS time,\n       SUM(CASE WHEN m.name = 'heart_rate_bpm' THEN r.n ELSE 0 END) AS heart_rate,\n       SUM(CASE WHEN m.name = 'rr_interval_ms' THEN r.n ELSE 0 END) AS rr_intervals\nFROM rollups_daily r JOIN metrics m ON m.id = r.metric_id\nWHERE r.day >= strftime('%Y-%m-%d', $__from / 1000.0, 'unixepoch')\n  AND r.day <= strftime('%Y-%m-%d', $__to   / 1000.0, 'unixepoch')\nGROUP BY r.day\nORDER BY time",
+          "queryText": "SELECT CAST(strftime('%s', r.day || 'T12:00:00Z') AS INTEGER) * 1000 AS time,\n       SUM(CASE WHEN m.name = 'heart_rate_bpm' THEN r.n ELSE 0 END) AS heart_rate,\n       SUM(CASE WHEN m.name = 'rr_interval_ms' THEN r.n ELSE 0 END) AS rr_intervals\nFROM rollups_daily r JOIN metrics m ON m.id = r.metric_id\nWHERE r.day >= strftime('%Y-%m-%d', $__from / 1000.0, 'unixepoch')\n  AND r.day <= strftime('%Y-%m-%d', $__to   / 1000.0, 'unixepoch')\nGROUP BY r.day\nORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "table",
+      "title": "Sessions in range",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 21 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "options": { "showHeader": true },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT s.id                     AS \"#\",\n       s.start_ts               AS \"Started\",\n       s.end_ts                 AS \"Ended\",\n       COALESCE(s.label, '')    AS \"Label\",\n       s.kind                   AS \"Kind\",\n       src.display_name         AS \"Source\",\n       COALESCE(d.name, '')     AS \"Device\",\n       (SELECT COUNT(*) FROM observations o\n         JOIN metrics m ON m.id = o.metric_id\n        WHERE o.session_id = s.id AND m.name = 'heart_rate_bpm') AS \"Samples\",\n       (SELECT ROUND(AVG(o.value), 1) FROM observations o\n         JOIN metrics m ON m.id = o.metric_id\n        WHERE o.session_id = s.id AND m.name = 'heart_rate_bpm') AS \"Avg bpm\"\nFROM sessions s\nJOIN sources src ON src.id = s.source_id\nLEFT JOIN devices d ON d.id = s.device_id\nWHERE s.start_ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') || '+00:00'\n  AND (s.end_ts IS NULL\n       OR s.end_ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00')\nORDER BY s.start_ts DESC",
+          "queryText": "SELECT s.id                     AS \"#\",\n       s.start_ts               AS \"Started\",\n       s.end_ts                 AS \"Ended\",\n       COALESCE(s.label, '')    AS \"Label\",\n       s.kind                   AS \"Kind\",\n       src.display_name         AS \"Source\",\n       COALESCE(d.name, '')     AS \"Device\",\n       (SELECT COUNT(*) FROM observations o\n         JOIN metrics m ON m.id = o.metric_id\n        WHERE o.session_id = s.id AND m.name = 'heart_rate_bpm') AS \"Samples\",\n       (SELECT ROUND(AVG(o.value), 1) FROM observations o\n         JOIN metrics m ON m.id = o.metric_id\n        WHERE o.session_id = s.id AND m.name = 'heart_rate_bpm') AS \"Avg bpm\"\nFROM sessions s\nJOIN sources src ON src.id = s.source_id\nLEFT JOIN devices d ON d.id = s.device_id\nWHERE s.start_ts < strftime('%Y-%m-%dT%H:%M:%f', $__to / 1000.0, 'unixepoch') || '+00:00'\n  AND (s.end_ts IS NULL\n       OR s.end_ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00')\nORDER BY s.start_ts DESC"
+        }
+      ]
+    }
+  ]
+}

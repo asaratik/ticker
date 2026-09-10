@@ -36,6 +36,15 @@ def _default_db_path() -> Path:
 
 DB_PATH = _default_db_path()
 
+# Where heart rate comes from. "ble" reads a strap -- or a Garmin watch with
+# Broadcast Heart Rate on -- over Bluetooth. "http" runs a small server this
+# machine listens on and lets the watch push readings to it over the
+# network, which needs no Bluetooth or ANT+ hardware here at all. See
+# hr_source.create_source.
+HR_SOURCE = (os.environ.get("HRM_SOURCE") or "ble").strip().lower()
+
+# -- BLE source -------------------------------------------------------------
+
 # Pin a specific strap by BLE address to skip scanning -- handy if more than
 # one heart rate device is in range. Leave unset to auto-discover the first
 # device advertising the standard Heart Rate Service.
@@ -43,6 +52,26 @@ DEVICE_ADDRESS = os.environ.get("HRM_DEVICE_ADDRESS") or None
 
 SCAN_TIMEOUT_SEC = float(os.environ.get("HRM_SCAN_TIMEOUT_SEC", "10"))
 RECONNECT_DELAY_SEC = float(os.environ.get("HRM_RECONNECT_DELAY_SEC", "5"))
+
+# -- HTTP source ------------------------------------------------------------
+
+# 0.0.0.0 listens on every interface, which is what a watch on the LAN needs
+# -- 127.0.0.1 would only ever hear from this machine itself.
+HTTP_HOST = os.environ.get("HRM_HTTP_HOST", "0.0.0.0")
+
+# 8476 is "HRM" on a phone keypad, and -- more to the point -- it sits below
+# the blocks Windows reserves for Hyper-V/WSL, which on a dev machine
+# routinely swallow the whole 8600-9100 region. Binding inside one of those
+# fails with a permission error, not "address in use"; see the hint in
+# http_source.start().
+HTTP_PORT = int(os.environ.get("HRM_HTTP_PORT", "8476"))
+
+# Shared secret the watch must send. Unset means anything that can reach the
+# port can post readings -- fine on a home LAN, worth setting anywhere else.
+HTTP_TOKEN = os.environ.get("HRM_HTTP_TOKEN") or None
+
+# How long without a reading before the UI stops calling the watch connected.
+HTTP_SAMPLE_TIMEOUT_SEC = float(os.environ.get("HRM_HTTP_TIMEOUT_SEC", "15"))
 
 POLL_INTERVAL_MS = 200
 GRAPH_WINDOW_SEC = int(os.environ.get("HRM_GRAPH_WINDOW_SEC", str(5 * 60)))

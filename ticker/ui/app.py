@@ -1,20 +1,27 @@
 """
 Small cross-platform desktop app: live heart rate display + persistent logging.
 
-Connects to any standard BLE heart rate strap via hr_ble.HRStreamer, shows
-live bpm plus a scrolling graph, and logs samples to a local SQLite DB
-(storage.py) whenever a session is running, so it can be analyzed later.
+Reads heart rate from whichever source config.HR_SOURCE selects -- a BLE
+strap or broadcasting watch, or a watch pushing over the network (see
+hr_source) -- shows live bpm plus a scrolling graph, and logs to the v2 observations
+database (ticker.db.store) whenever a session is running, so it can be
+analyzed later.
+
+Each reading becomes several rows: heart rate, one per RR interval in the
+packet, and HRV derived from those by the normalizer -- the strap never
+sends HRV itself. A v1 database is migrated in place the first time this
+runs; see ticker/db/migrate.py.
 
 Sessions are a *logical*, user-controlled concept -- Start/Stop -- separate
-from the BLE connection, which comes and goes on its own (auto-reconnect)
-in the background. A session survives brief connection drops; only the
-user ends it.
+from the connection, which comes and goes on its own (auto-reconnect) in
+the background. A session survives brief connection drops; only the user
+ends it.
 
-Nothing here is hardcoded to a specific strap or machine -- see config.py
-to point this at a different device, database location, etc.
+Nothing here is hardcoded to a specific device, transport or machine -- see
+config.py to point this at a different source, device, database location.
 
 Run:
-    python hrm_app.py
+    python -m ticker.ui.app
 """
 
 from __future__ import annotations
@@ -28,8 +35,8 @@ import tkinter as tk
 from collections import deque
 
 import config
-import hr_ble
-import storage
+import hr_source
+from ticker.ingest.session_logger import SessionLogger
 
 
 def _setup_logging():
@@ -40,7 +47,7 @@ def _setup_logging():
     always captured somewhere findable, and printing never crashes the app.
     """
     if getattr(sys, "frozen", False):
-        log_path = config.DB_PATH.parent / "hrm_app.log"
+        log_path = config.DB_PATH.parent / "ticker.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_file = open(log_path, "a", buffering=1, encoding="utf-8")
         sys.stdout = log_file
@@ -55,16 +62,24 @@ class HRApp:
         self.root.resizable(False, False)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        self.store = storage.AsyncSessionStore()
         self.out_queue: "queue.Queue" = queue.Queue()
-        self.streamer = hr_ble.HRStreamer(
-            self.out_queue,
-            address=config.DEVICE_ADDRESS,
-            scan_timeout=config.SCAN_TIMEOUT_SEC,
-            reconnect_delay=config.RECONNECT_DELAY_SEC,
-        )
+        try:
+            self.source = hr_source.create_source(self.out_queue)
+        except ValueError as exc:
+            # A misspelled HRM_SOURCE shouldn't be an invisible crash in a
+            # windowed build. Come up with no source, and let the error ride
+            # the normal queue so it lands in the status line like any other.
+            self.source = None
+            self.out_queue.put({"type": "error", "message": str(exc)})
 
-        # BLE connection state (independent of session state)
+        # All persistence lives behind this: opening and migrating the
+        # database, sessions, and turning messages into observations. It
+        # reports its own failures onto out_queue and stays usable-but-inert
+        # if the database can't be opened, so the window still shows live bpm.
+        self.logger = (SessionLogger(config.HR_SOURCE, error_queue=self.out_queue)
+                       if self.source is not None else None)
+
+        # Connection state (independent of session state)
         self.connected = False
         self.connected_device_name = None
         self.connected_device_address = None
@@ -81,7 +96,8 @@ class HRApp:
         self.graph_points = deque()  # (epoch_seconds, hr)
 
         self._build_ui()
-        self.streamer.start()
+        if self.source is not None:
+            self.source.start()
         self.root.after(config.POLL_INTERVAL_MS, self._tick)
 
     # UI construction
@@ -206,27 +222,31 @@ class HRApp:
 
     def _handle_status(self, msg: dict):
         status = msg["status"]
+        # A source may supply its own wording -- the HTTP one uses it to show
+        # the URL to point the watch at, which the generic text can't. Where
+        # it doesn't, fall back to the transport-neutral phrasing below.
+        detail = msg.get("message")
         if status == "searching":
             self.connected = False
             self.bpm_var.set("--")
-            self.status_var.set("Searching for heart rate monitor…")
+            self.status_var.set(detail or "Searching for heart rate monitor…")
             self.status_label.configure(fg=config.WARN)
         elif status == "connected":
             self.connected = True
             self.connected_device_name = msg.get("device_name")
             self.connected_device_address = msg.get("device_address")
             name = self.connected_device_name or "device"
-            self.status_var.set(f"Connected to {name}")
+            self.status_var.set(detail or f"Connected to {name}")
             self.status_label.configure(fg=config.GOOD)
         elif status == "reconnecting":
             self.connected = False
             self.bpm_var.set("--")
-            self.status_var.set("Connection lost — reconnecting…")
+            self.status_var.set(detail or "Connection lost — reconnecting…")
             self.status_label.configure(fg=config.WARN)
         elif status == "stopped":
             self.connected = False
             self.bpm_var.set("--")
-            self.status_var.set("Stopped")
+            self.status_var.set(detail or "Stopped")
             self.status_label.configure(fg=config.SUBTEXT)
         self._update_start_button_state()
 
@@ -241,9 +261,8 @@ class HRApp:
         if not self.session_active:
             return
 
-        self.store.insert_sample(
-            self.session_token, msg["timestamp"], hr, msg.get("rr_intervals_ms")
-        )
+        if self.logger is not None:
+            self.logger.log_sample(msg)
 
         self.sample_count += 1
         self.hr_sum += hr
@@ -275,10 +294,10 @@ class HRApp:
             return
         self.session_token = next(self._token_counter)
         label = self.label_var.get().strip() or None
-        self.store.start_session(
-            self.session_token, self.connected_device_name,
-            self.connected_device_address, label,
-        )
+        if self.logger is not None:
+            self.logger.start_session(
+                label=label, device_name=self.connected_device_name,
+                device_address=self.connected_device_address)
 
         self.session_active = True
         self.session_start_ts = time.time()
@@ -303,7 +322,9 @@ class HRApp:
             elapsed = int(time.time() - self.session_start_ts)
             self.elapsed_var.set(f"{elapsed // 60:02d}:{elapsed % 60:02d}")
 
-        self.store.end_session(self.session_token)
+        if self.logger is not None:
+            self.logger.end_session()
+
         self.session_active = False
         self.session_start_ts = None
         self.footer_var.set(f"Data: {config.DB_PATH}")
@@ -346,8 +367,10 @@ class HRApp:
     def on_close(self):
         if self.session_active:
             self._stop_session()
-        self.streamer.stop()
-        self.store.close()
+        if self.source is not None:
+            self.source.stop()
+        if self.logger is not None:
+            self.logger.close()     # commits whatever is still coalescing
         self.root.destroy()
 
 

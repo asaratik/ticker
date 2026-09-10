@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Hardened runtime entitlements for the distributable macOS app.
+
+  Notarization requires the hardened runtime, and the hardened runtime turns
+  off several things a PyInstaller-packaged Python app relies on. Each key
+  here is present because leaving it out breaks a specific thing, not as a
+  precaution.
+
+  device.bluetooth: the strap. NSBluetoothAlwaysUsageDescription in the
+  Info.plist is necessary but not sufficient under the hardened runtime.
+  Without this entitlement CoreBluetooth is refused and the app finds no
+  devices at all, with no error that says why.
+
+  disable-library-validation: a onedir bundle loads dozens of .so and .dylib
+  files at runtime. Library validation requires every one of them to be
+  signed by the same team ID, and the wheels they came from are not. Without
+  this the app dies on its first extension-module import.
+
+  allow-jit and allow-unsigned-executable-memory: ctypes and libffi build
+  call thunks in memory and execute them, which the hardened runtime blocks
+  by default. bleak reaches CoreBluetooth through pyobjc, which is ctypes
+  all the way down.
+
+  What is deliberately absent is get-task-allow, which lets a debugger
+  attach and which the notary service rejects outright.
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.device.bluetooth</key>
+    <true/>
+
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+
+    <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+    <true/>
+</dict>
+</plist>

@@ -1,0 +1,24 @@
+# winget installer manifest.
+#
+# InstallerSha256, InstallerUrl, PackageVersion and ReleaseDate are
+# placeholders. The release workflow writes filled-in copies to dist/winget/,
+# hashing the installer after it is signed -- signing rewrites its bytes, and
+# a wrong hash is the most common reason a winget PR fails validation, so
+# none of these is ever hand-edited.
+PackageIdentifier: AshokAratikatla.Ticker
+PackageVersion: 0.2.0
+InstallerType: inno
+# Per-user, matching PrivilegesRequired=lowest in ticker.iss: no UAC prompt.
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+ReleaseDate: 1970-01-01
+Installers:
+  - Architecture: x64
+    InstallerUrl: https://github.com/ashokaratikatla/ticker/releases/download/v0.2.0/Ticker-0.2.0-setup.exe
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0

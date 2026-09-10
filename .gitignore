@@ -2,14 +2,24 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+# setuptools metadata, written by `pip install -e .`
+*.egg-info/
 
 # PyInstaller build output
 build/
 dist/
+# Generated specs are throwaway; packaging/ticker.spec is the real one that
+# build.py builds from, so it has to survive this rule.
 *.spec
+!packaging/*.spec
 
 # Local runtime data (the real DB lives in %LOCALAPPDATA%\Ticker, but
 # just in case anything ever lands here during local testing)
 *.sqlite3
 *.sqlite3-*
 *.log
+
+# Connect IQ build output
+connectiq/**/bin/
+*.prg
+*.iq

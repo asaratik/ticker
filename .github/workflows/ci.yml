@@ -18,7 +18,9 @@ jobs:
         include:
           - os: windows-latest
             artifact-name: Ticker-windows
-            artifact-path: dist/Ticker.exe
+            # The whole onedir folder: the exe alone cannot run without
+            # _internal beside it.
+            artifact-path: dist/Ticker
           - os: macos-latest
             artifact-name: Ticker-macos
             # The .zip, not the .app: upload-artifact re-zips a directory
@@ -41,7 +43,7 @@ jobs:
       - name: Install Tk (Linux)
         if: runner.os == 'Linux'
         # The runner image's Python links Tk dynamically, so importing
-        # tkinter (hrm_app does, at import time) needs the Tcl/Tk runtime
+        # tkinter (ticker.ui.app does, at import time) needs the Tcl/Tk runtime
         # present. Windows and macOS ship it with Python.
         run: sudo apt-get update && sudo apt-get install -y python3-tk
 

@@ -5,11 +5,13 @@ bit-twiddling per the Bluetooth SIG spec, and the lifecycle tests never get
 as far as touching a BLE adapter.
 """
 
+import asyncio
 import queue
 
 import pytest
 
-from hr_ble import HRStreamer, parse_hr_measurement
+import ble_source
+from ble_source import BLEHRSource, parse_hr_measurement
 
 
 def test_8bit_heart_rate_no_extra_flags():
@@ -82,7 +84,7 @@ def test_rr_parsing_ignores_a_trailing_odd_byte():
 # -- streamer lifecycle ------------------------------------------------
 
 def test_stop_without_start_is_a_no_op():
-    HRStreamer(queue.Queue()).stop()  # must not raise or block
+    BLEHRSource(queue.Queue()).stop()  # must not raise or block
 
 
 def test_stop_immediately_after_start_shuts_down(monkeypatch):
@@ -90,7 +92,7 @@ def test_stop_immediately_after_start_shuts_down(monkeypatch):
     stop event must still shut it down -- this is the launch-then-close path,
     and it used to signal nothing and just block on the join.
     """
-    streamer = HRStreamer(queue.Queue(), scan_timeout=0.01, reconnect_delay=0.01)
+    streamer = BLEHRSource(queue.Queue(), scan_timeout=0.01, reconnect_delay=0.01)
 
     async def never_finds_anything():
         return None
@@ -104,7 +106,7 @@ def test_stop_immediately_after_start_shuts_down(monkeypatch):
 
 
 def test_stop_is_idempotent(monkeypatch):
-    streamer = HRStreamer(queue.Queue(), scan_timeout=0.01, reconnect_delay=0.01)
+    streamer = BLEHRSource(queue.Queue(), scan_timeout=0.01, reconnect_delay=0.01)
 
     async def never_finds_anything():
         return None
@@ -134,7 +136,7 @@ def test_stop_interrupts_a_long_scan(monkeypatch):
             raise
         return None
 
-    streamer = HRStreamer(queue.Queue(), scan_timeout=30, reconnect_delay=30)
+    streamer = BLEHRSource(queue.Queue(), scan_timeout=30, reconnect_delay=30)
     monkeypatch.setattr(streamer, "_find_device", slow_scan)
 
     streamer.start()
@@ -145,3 +147,97 @@ def test_stop_interrupts_a_long_scan(monkeypatch):
     assert not streamer._thread.is_alive()
     assert scan_cancelled == [True]
     assert elapsed < 5, f"stop() took {elapsed:.1f}s -- the scan wasn't cancelled"
+
+
+# -- device selection --------------------------------------------------
+
+class _FakeAdv:
+    def __init__(self, service_uuids):
+        self.service_uuids = service_uuids
+
+
+class _FakeDevice:
+    def __init__(self, name, address):
+        self.name = name
+        self.address = address
+
+
+def _patch_scanner(monkeypatch, *, by_address, discovered):
+    """Replace both BleakScanner lookups. `discovered` is a list of devices
+    returned by a full scan, all advertising the Heart Rate Service.
+    """
+    async def find_device_by_address(address, timeout=None):
+        return by_address
+
+    async def discover(timeout=None, return_adv=False):
+        adv = _FakeAdv([HR_UUID])
+        return {d.address: (d, adv) for d in discovered}
+
+    monkeypatch.setattr(ble_source.BleakScanner, "find_device_by_address",
+                        find_device_by_address)
+    monkeypatch.setattr(ble_source.BleakScanner, "discover", discover)
+
+
+HR_UUID = "0000180d-0000-1000-8000-00805f9b34fb"
+
+
+def test_pinned_address_does_not_fall_back_to_another_device(monkeypatch):
+    """A pinned address means that device or nothing.
+
+    Falling through to a general scan would connect to whatever other strap
+    happens to be in range -- the gym's, the neighbour's -- which is the one
+    thing pinning an address exists to prevent.
+    """
+    someone_elses = _FakeDevice("Someone Else's Strap", "FF:FF:FF:FF:FF:FF")
+    _patch_scanner(monkeypatch, by_address=None, discovered=[someone_elses])
+
+    out = queue.Queue()
+    source = BLEHRSource(out, address="AA:BB:CC:DD:EE:FF", scan_timeout=0.01)
+
+    assert asyncio.run(source._find_device()) is None
+
+    errors = [m for m in _drain(out) if m["type"] == "error"]
+    assert errors, "a pinned device that isn't there should say so"
+    assert "AA:BB:CC:DD:EE:FF" in errors[0]["message"]
+
+
+def test_remembered_address_still_falls_back_to_scanning(monkeypatch):
+    """The address remembered from a previous discovery is only a hint.
+
+    _main() overwrites self.address to make reconnects cheap; that must not
+    silently turn into a pin, or a strap that changes address (or is swapped
+    out) would never be found again.
+    """
+    other = _FakeDevice("Some Strap", "11:22:33:44:55:66")
+    _patch_scanner(monkeypatch, by_address=None, discovered=[other])
+
+    source = BLEHRSource(queue.Queue(), scan_timeout=0.01)  # no pin
+    source.address = "AA:BB:CC:DD:EE:FF"  # as _main does after a discovery
+
+    assert asyncio.run(source._find_device()) is other
+
+
+def test_pinned_address_is_used_when_present(monkeypatch):
+    pinned = _FakeDevice("My Strap", "AA:BB:CC:DD:EE:FF")
+
+    def discover_must_not_run(*args, **kwargs):
+        raise AssertionError("scanned even though the pinned device was found")
+
+    async def find_device_by_address(address, timeout=None):
+        return pinned
+
+    monkeypatch.setattr(ble_source.BleakScanner, "find_device_by_address",
+                        find_device_by_address)
+    monkeypatch.setattr(ble_source.BleakScanner, "discover", discover_must_not_run)
+
+    source = BLEHRSource(queue.Queue(), address="AA:BB:CC:DD:EE:FF", scan_timeout=0.01)
+    assert asyncio.run(source._find_device()) is pinned
+
+
+def _drain(q: queue.Queue) -> list:
+    out = []
+    while True:
+        try:
+            out.append(q.get_nowait())
+        except queue.Empty:
+            return out

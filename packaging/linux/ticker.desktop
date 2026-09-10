@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Ticker
+GenericName=Heart Rate Logger
+Comment=Live heart rate from a BLE strap, logged to one local SQLite file
+# Resolved inside the AppImage by AppRun, which puts usr/bin on PATH.
+Exec=Ticker
+# Must match the basename of the icon at the AppDir root (ticker.png).
+Icon=ticker
+Terminal=false
+Categories=Utility;Science;MedicalSoftware;
+Keywords=heart;rate;hrv;bluetooth;ble;health;
+StartupWMClass=Ticker

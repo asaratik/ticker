@@ -1,0 +1,16 @@
+# Dashboards are files in the repo, not database rows, so they are versioned
+# with the code that produces the data they read.
+apiVersion: 1
+
+providers:
+  - name: Ticker
+    folder: Ticker
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    # Edits made in the UI stay until the file changes again, which makes
+    # iterating on a panel bearable. Save changes back to the JSON file.
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/dashboards
+      foldersFromFilesStructure: false

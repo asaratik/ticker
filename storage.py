@@ -8,6 +8,10 @@ commit, which real-time antivirus scanning can turn into multi-second
 stalls if that happens on the same thread that's pumping window messages.
 We also turn on WAL mode, which avoids that per-commit file churn entirely.
 
+This is the v1 writer. The app writes through ticker.db.store now; what
+remains useful here is the read side, which reads either schema (see below),
+and the v1 schema itself, which the migration tests build fixtures from.
+
 Schema:
     sessions(id, start_time, end_time, device_name, device_address, label)
     samples(id, session_id, timestamp, heart_rate, rr_intervals_ms)
@@ -92,8 +96,13 @@ class AsyncSessionStore:
     exists, so logging samples never has to wait on a round trip.
     """
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None,
+                 error_queue: Optional["queue.Queue"] = None):
         self.db_path = Path(db_path) if db_path else config.DB_PATH
+        # Optional: the app's message queue, so a writer-thread failure can
+        # reach the UI instead of only the log file. Same message shape the
+        # heart rate sources use (see hr_source), since it's the same queue.
+        self._error_queue = error_queue
         self._ops: "queue.Queue" = queue.Queue()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -115,8 +124,24 @@ class AsyncSessionStore:
 
     # -- writer thread body --------------------------------------------
 
+    def _report(self, message: str):
+        if self._error_queue is not None:
+            self._error_queue.put({"type": "error", "message": message})
+
     def _run(self):
-        conn = _open(self.db_path)
+        try:
+            conn = _open(self.db_path)
+        except Exception as exc:
+            # An unwritable HRM_DB_PATH, a full disk, a corrupt file: the
+            # thread used to die here and take all logging with it, with no
+            # sign anywhere but a traceback nobody reads. Say so, then keep
+            # draining ops so callers still never block and close() still
+            # returns promptly.
+            traceback.print_exc()
+            self._report(f"Cannot log to {self.db_path} — {exc}")
+            self._drain_until_stop()
+            return
+
         token_to_row: dict = {}
         try:
             while True:
@@ -133,6 +158,14 @@ class AsyncSessionStore:
                     traceback.print_exc()
         finally:
             conn.close()
+
+    def _drain_until_stop(self):
+        """Swallow queued work until close(). Used when there's no database
+        to write to -- without it the queue grows for as long as the app runs.
+        """
+        while True:
+            if self._ops.get()[0] == "stop":
+                return
 
     @staticmethod
     def _apply(conn: sqlite3.Connection, token_to_row: dict, kind: str, op: tuple):
@@ -168,6 +201,19 @@ class AsyncSessionStore:
 
 
 # -- read-only helpers (used by the CLI summary below and by analysis scripts) --
+#
+# These read v1 or v2 databases and return the same shape either way, so an
+# analysis script written against v1 keeps working after the migration. The
+# v2 schema splits one v1 sample into several rows -- heart rate and one per
+# RR interval -- so the v2 path reassembles them back into the v1 shape.
+# Anything new should read ticker.db.queries directly instead.
+
+
+def _is_v2(conn: sqlite3.Connection) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'observations'"
+    ).fetchone() is not None
+
 
 def list_sessions(db_path: Optional[Path] = None):
     """Return all sessions with a sample count and bpm summary, newest first."""
@@ -175,6 +221,24 @@ def list_sessions(db_path: Optional[Path] = None):
     if conn is None:
         return []
     try:
+        if _is_v2(conn):
+            return conn.execute(
+                """
+                SELECT s.id, s.start_ts, s.end_ts, d.name, s.label,
+                       COUNT(o.id) AS n_samples,
+                       AVG(o.value) AS avg_hr,
+                       MIN(o.value) AS min_hr,
+                       MAX(o.value) AS max_hr
+                FROM sessions s
+                LEFT JOIN devices d ON d.id = s.device_id
+                LEFT JOIN observations o
+                       ON o.session_id = s.id
+                      AND o.metric_id = (SELECT id FROM metrics
+                                          WHERE name = 'heart_rate_bpm')
+                GROUP BY s.id
+                ORDER BY s.id DESC
+                """
+            ).fetchall()
         return conn.execute(
             """
             SELECT s.id, s.start_time, s.end_time, s.device_name, s.label,
@@ -197,6 +261,8 @@ def get_samples(session_id: int, db_path: Optional[Path] = None):
     if conn is None:
         return []
     try:
+        if _is_v2(conn):
+            return _v2_samples(conn, session_id)
         return conn.execute(
             "SELECT timestamp, heart_rate, rr_intervals_ms FROM samples "
             "WHERE session_id = ? ORDER BY id",
@@ -204,6 +270,62 @@ def get_samples(session_id: int, db_path: Optional[Path] = None):
         ).fetchall()
     finally:
         conn.close()
+
+
+def _v2_samples(conn: sqlite3.Connection, session_id: int):
+    """Rebuild v1-shaped (timestamp, heart_rate, rr_csv) rows from v2.
+
+    Sessions recorded before the migration are read straight out of
+    samples_v1, which the migration leaves untouched, so historical data
+    comes back exactly as it did before -- including its original timestamp
+    precision and RR grouping.
+
+    For anything recorded since, RR intervals are their own observations and
+    are grouped back by timestamp: each beat belongs to the first heart rate
+    sample at or after it, which is the inverse of how the beats were placed
+    (see ticker.ingest.derive.expand_rr). That grouping is exact for v2 data,
+    whose timestamps are millisecond resolution.
+    """
+    if _has_v1_samples(conn, session_id):
+        return conn.execute(
+            "SELECT timestamp, heart_rate, rr_intervals_ms FROM samples_v1 "
+            "WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall()
+
+    rows = conn.execute(
+        "SELECT m.name, o.ts, o.value FROM observations o "
+        "JOIN metrics m ON m.id = o.metric_id "
+        "WHERE o.session_id = ? AND m.name IN ('heart_rate_bpm', 'rr_interval_ms') "
+        "ORDER BY o.ts, o.id",
+        (session_id,),
+    ).fetchall()
+
+    samples = [(ts, value) for name, ts, value in rows if name == "heart_rate_bpm"]
+    beats = [(ts, value) for name, ts, value in rows if name == "rr_interval_ms"]
+
+    out, beat_index = [], 0
+    for position, (ts, hr) in enumerate(samples):
+        is_last = position == len(samples) - 1
+        carried = []
+        while beat_index < len(beats) and (is_last or beats[beat_index][0] <= ts):
+            carried.append(beats[beat_index][1])
+            beat_index += 1
+        out.append((ts, int(hr), ",".join(str(v) for v in carried)))
+    return out
+
+
+def _has_v1_samples(conn: sqlite3.Connection, session_id: int) -> bool:
+    """True if this session predates the migration and its original rows are
+    still there. The migration preserves session ids, so they line up."""
+    present = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'samples_v1'"
+    ).fetchone()
+    if not present:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM samples_v1 WHERE session_id = ? LIMIT 1", (session_id,)
+    ).fetchone() is not None
 
 
 if __name__ == "__main__":

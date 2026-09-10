@@ -1,0 +1,15 @@
+# winget version manifest.
+#
+# Publishing: the release workflow writes filled-in copies of these three
+# files to dist/winget/ and attaches them to the GitHub release. Fork
+# microsoft/winget-pkgs, drop *those* under
+# manifests/a/AshokAratikatla/Ticker/<version>/, open a PR.
+#
+# Filled in locally the same way:
+#     python build.py --winget-only --version 1.2.3
+#     winget validate --manifest dist/winget
+PackageIdentifier: AshokAratikatla.Ticker
+PackageVersion: 0.2.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

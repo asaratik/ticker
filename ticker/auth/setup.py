@@ -1,0 +1,209 @@
+"""
+Configure a pull source: store its token, register it in the database.
+
+    python -m ticker.auth.setup add oura --name "Ring"
+    python -m ticker.auth.setup add fitbit --name "Watch"
+    python -m ticker.auth.setup list
+    python -m ticker.auth.setup remove oura --name "Ring"
+
+Two auth styles, because the vendors do not agree on one. Oura
+takes a personal access token that the user pastes; Fitbit needs the OAuth
+flow, which opens a browser and waits for the loopback redirect. Both end
+in the same place: the secret goes to the OS keyring and the database
+stores only the name of the entry.
+
+A pasted token is read from a prompt, never from an argument. A token on the
+command line ends up in shell history, in `ps` output, and in any crash
+report that captures argv, so environment variables are ruled out too. It
+goes straight into the OS keyring; the database
+stores only the name of the entry.
+"""
+
+from __future__ import annotations
+
+import argparse
+import getpass
+import sys
+from pathlib import Path
+from typing import Optional
+
+from ticker import config as tconfig
+from ticker.auth import secrets
+from ticker.db import store
+
+# Vendors this can configure: kind, default display name, auth style.
+VENDORS = {
+    "oura": ("pull", "Ring", "token"),
+    "fitbit": ("pull", "Fitbit", "oauth"),
+}
+
+
+def add(conn, vendor: str, display_name: str,
+        token: Optional[str] = None) -> int:
+    """Register a source and store its token. Returns the source id."""
+    kind, _default, _style = VENDORS[vendor]
+    ref = secrets.auth_ref(vendor, display_name)
+    if token is None:
+        token = getpass.getpass(
+            "{} personal access token (input hidden): ".format(vendor))
+    token = token.strip()
+    if not token:
+        raise ValueError("no token given")
+
+    # Keyring first: a source row whose token failed to store would look
+    # configured and never work.
+    secrets.set_secret(ref, token)
+    source_id = store.ensure_source(conn, kind, vendor, display_name,
+                                    auth_ref=ref)
+    conn.execute("UPDATE sources SET auth_ref = ?, enabled = 1 WHERE id = ?",
+                 (ref, source_id))
+    return source_id
+
+
+def add_oauth(conn, vendor: str, display_name: str,
+              open_browser=None) -> int:
+    """Register a source via the OAuth flow. Returns the source id.
+
+    The browser half is deliberately the caller's: this opens a tab, prints
+    the URL as a fallback for anyone on a headless box or behind a browser
+    that will not launch, and blocks on the loopback listener until the
+    redirect lands.
+    """
+    from ticker import config as tconfig
+    from ticker.sources import fitbit
+
+    if vendor != "fitbit":
+        raise ValueError("no OAuth flow for {!r}".format(vendor))
+    if not tconfig.FITBIT_CLIENT_ID:
+        raise ValueError(
+            "TICKER_FITBIT_CLIENT_ID is unset. Register an application at "
+            "dev.fitbit.com and set it; the client id is not a secret.")
+
+    kind, _default, _style = VENDORS[vendor]
+    ref = secrets.auth_ref(vendor, display_name)
+
+    receiver, url, state, verifier = fitbit.begin_authorization(
+        tconfig.FITBIT_CLIENT_ID)
+    try:
+        print("Opening your browser to authorize {}.".format(vendor))
+        print("If it does not open, visit:\n\n    {}\n".format(url))
+        opener = open_browser or _open_browser
+        opener(url)
+        # Stores the tokens in the keyring on success.
+        fitbit.complete_authorization(
+            receiver, state, verifier, tconfig.FITBIT_CLIENT_ID, ref)
+    finally:
+        # Section 8: the listener goes down the moment it is done, on every
+        # path out -- including the user closing the tab.
+        receiver.close()
+
+    source_id = store.ensure_source(conn, kind, vendor, display_name,
+                                    auth_ref=ref)
+    conn.execute("UPDATE sources SET auth_ref = ?, enabled = 1 WHERE id = ?",
+                 (ref, source_id))
+    return source_id
+
+
+def _open_browser(url: str) -> None:
+    """Best effort. A failure here is not fatal: the URL was printed too."""
+    import webbrowser
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def remove(conn, vendor: str, display_name: str) -> bool:
+    """Forget a source's token and disable it.
+
+    The source row and its observations stay: deleting the row would cascade
+    and take the data with it, which is not what 'remove this connector'
+    should mean.
+    """
+    ref = secrets.auth_ref(vendor, display_name)
+    secrets.delete_secret(ref)
+    cur = conn.execute(
+        "UPDATE sources SET enabled = 0 WHERE vendor = ? AND display_name = ?",
+        (vendor, display_name))
+    return cur.rowcount > 0
+
+
+def listing(conn):
+    return conn.execute(
+        "SELECT s.id, s.kind, s.vendor, s.display_name, s.enabled, s.auth_ref, "
+        "       (SELECT COUNT(*) FROM observations o WHERE o.source_id = s.id) "
+        "FROM sources s ORDER BY s.id").fetchall()
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--db", type=Path, default=None)
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    add_parser = sub.add_parser("add", help="store a token and register a source")
+    add_parser.add_argument("vendor", choices=sorted(VENDORS))
+    add_parser.add_argument("--name", default=None,
+                            help="display name, if you have more than one")
+
+    remove_parser = sub.add_parser("remove", help="forget a token, disable a source")
+    remove_parser.add_argument("vendor", choices=sorted(VENDORS))
+    remove_parser.add_argument("--name", default=None)
+
+    sub.add_parser("list", help="show configured sources")
+
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+    conn = store.connect(args.db or tconfig.DB_PATH)
+    try:
+        return _dispatch(conn, args)
+    finally:
+        conn.close()
+
+
+def _dispatch(conn, args) -> int:
+    if args.command == "list":
+        rows = listing(conn)
+        if not rows:
+            print("no sources configured")
+            return 0
+        for sid, kind, vendor, name, enabled, ref, count in rows:
+            print("#{}  {:7s} {:12s} {:22s} {:9s} {:>8} rows  {}".format(
+                sid, kind, vendor, name,
+                "enabled" if enabled else "disabled", count, ref or "-"))
+        return 0
+
+    name = args.name or VENDORS[args.vendor][1]
+    style = VENDORS[args.vendor][2]
+
+    if args.command == "add":
+        if not secrets.available():
+            print("No OS keyring available. Install the 'keyring' package "
+                  "(pip install keyring); on a headless Linux box you also "
+                  "need a Secret Service backend.", file=sys.stderr)
+            return 1
+        try:
+            if style == "oauth":
+                source_id = add_oauth(conn, args.vendor, name)
+            else:
+                source_id = add(conn, args.vendor, name)
+        except (ValueError, secrets.KeyringUnavailable) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        except RuntimeError as exc:
+            # CallbackError and friends: the user closed the tab, denied
+            # access, or the redirect never arrived.
+            print("authorization failed: {}".format(exc), file=sys.stderr)
+            return 1
+        print("configured {} as source #{} ({!r})".format(
+            args.vendor, source_id, name))
+        print("run 'python -m ticker.ingest.sync' to start pulling")
+        return 0
+
+    if remove(conn, args.vendor, name):
+        print("removed the token for {!r}; its data is untouched".format(name))
+        return 0
+    print("no source named {!r}".format(name), file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

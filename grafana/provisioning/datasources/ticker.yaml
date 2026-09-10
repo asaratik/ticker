@@ -1,0 +1,18 @@
+# Datasource provisioning for the Ticker database.
+#
+# frser-sqlite-datasource reads a SQLite file directly, which keeps the whole
+# stack to one file and no server.
+apiVersion: 1
+
+datasources:
+  - name: Ticker
+    uid: ticker-sqlite
+    type: frser-sqlite-datasource
+    access: proxy
+    isDefault: true
+    jsonData:
+      # The path as the Grafana process sees it. Under the supplied
+      # docker-compose.yml that is the container path, and the host directory
+      # is chosen with TICKER_DB_DIR. Running Grafana directly instead? Put
+      # the real path to hrm_data.sqlite3 here.
+      path: /var/lib/ticker/hrm_data.sqlite3

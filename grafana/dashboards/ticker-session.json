@@ -1,0 +1,159 @@
+{
+  "uid": "ticker-session",
+  "title": "Ticker — Session detail",
+  "description": "Short-range view over raw observations. Pick a window from the Sessions table on the Overview dashboard, or zoom straight in here.",
+  "tags": ["ticker"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": { "from": "now-1h", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "metric",
+        "label": "Extra metric",
+        "description": "Which secondary metric the bottom panel shows.",
+        "type": "custom",
+        "query": "rr_interval_ms,hrv_rmssd_ms,spo2_pct,respiratory_rate_bpm",
+        "current": { "text": "rr_interval_ms", "value": "rr_interval_ms" },
+        "options": [
+          { "text": "rr_interval_ms", "value": "rr_interval_ms", "selected": true },
+          { "text": "hrv_rmssd_ms", "value": "hrv_rmssd_ms", "selected": false },
+          { "text": "spo2_pct", "value": "spo2_pct", "selected": false },
+          { "text": "respiratory_rate_bpm", "value": "respiratory_rate_bpm", "selected": false }
+        ],
+        "includeAll": false,
+        "multi": false
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Average bpm in range",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "fieldConfig": { "defaults": { "unit": "bpm", "decimals": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT ROUND(AVG(o.value), 1) AS \"Avg\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'heart_rate_bpm'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'",
+          "queryText": "SELECT ROUND(AVG(o.value), 1) AS \"Avg\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'heart_rate_bpm'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Peak bpm in range",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "fieldConfig": { "defaults": { "unit": "bpm", "decimals": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT MAX(o.value) AS \"Peak\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'heart_rate_bpm'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'",
+          "queryText": "SELECT MAX(o.value) AS \"Peak\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'heart_rate_bpm'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Beats captured",
+      "description": "RR intervals in range — one row per heartbeat.",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT COUNT(*) AS \"Beats\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'rr_interval_ms'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'",
+          "queryText": "SELECT COUNT(*) AS \"Beats\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'rr_interval_ms'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Latest reading",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "fieldConfig": { "defaults": { "unit": "bpm", "decimals": 0 }, "overrides": [] },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "table",
+          "timeColumns": [],
+          "rawQueryText": "SELECT o.value AS \"Latest\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'heart_rate_bpm'\nORDER BY o.ts DESC\nLIMIT 1",
+          "queryText": "SELECT o.value AS \"Latest\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'heart_rate_bpm'\nORDER BY o.ts DESC\nLIMIT 1"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Heart rate",
+      "description": "Raw samples straight from observations — no bucketing, so this is what the strap actually reported.",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 4 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bpm",
+          "custom": { "drawStyle": "line", "lineWidth": 2, "fillOpacity": 8, "showPoints": "never", "spanNulls": false }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT CAST(strftime('%s', o.ts) AS INTEGER) * 1000 AS time,\n       o.value AS bpm\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'heart_rate_bpm'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'\nORDER BY time",
+          "queryText": "SELECT CAST(strftime('%s', o.ts) AS INTEGER) * 1000 AS time,\n       o.value AS bpm\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = 'heart_rate_bpm'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'\nORDER BY time"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "$metric",
+      "description": "Any other metric over the same window. RR intervals are one point per heartbeat.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 14 },
+      "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "points", "lineWidth": 1, "fillOpacity": 0, "showPoints": "always", "pointSize": 3 }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "frser-sqlite-datasource", "uid": "ticker-sqlite" },
+          "queryType": "time series",
+          "timeColumns": ["time"],
+          "rawQueryText": "SELECT CAST(strftime('%s', o.ts) AS INTEGER) * 1000\n         + CAST(strftime('%f', o.ts) * 1000 AS INTEGER) % 1000 AS time,\n       o.value AS \"$metric\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = '$metric'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'\nORDER BY time",
+          "queryText": "SELECT CAST(strftime('%s', o.ts) AS INTEGER) * 1000\n         + CAST(strftime('%f', o.ts) * 1000 AS INTEGER) % 1000 AS time,\n       o.value AS \"$metric\"\nFROM observations o JOIN metrics m ON m.id = o.metric_id\nWHERE m.name = '$metric'\n  AND o.ts >= strftime('%Y-%m-%dT%H:%M:%f', $__from / 1000.0, 'unixepoch') || '+00:00'\n  AND o.ts <  strftime('%Y-%m-%dT%H:%M:%f', $__to   / 1000.0, 'unixepoch') || '+00:00'\nORDER BY time"
+        }
+      ]
+    }
+  ]
+}

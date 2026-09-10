@@ -1,0 +1,84 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ticker"
+version = "0.2.0"
+description = "Local-first health data logger: BLE heart rate, vendor APIs, one SQLite file"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["heart-rate", "bluetooth", "ble", "hrv", "oura", "quantified-self"]
+classifiers = [
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+
+# bleak is needed only for the BLE source; the HTTP source and every pull
+# source work without it. It stays a hard dependency because the default
+# HRM_SOURCE is 'ble' and a default that needs an extra install is a bad
+# default.
+dependencies = [
+    "bleak>=1.0",
+    "tzdata>=2024.1; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+# Pull-source tokens live in the OS keyring. Optional so
+# that a BLE-only install doesn't drag in a keyring backend it never uses.
+cloud = ["keyring>=24.0"]
+dev = ["pytest>=7.0", "pyinstaller>=6.0", "pyflakes>=3.0"]
+
+[project.urls]
+Homepage = "https://github.com/ashokaratikatla/ticker"
+Issues = "https://github.com/ashokaratikatla/ticker/issues"
+
+# gui-scripts, not scripts: on Windows this produces a launcher that doesn't
+# open a console window behind the Tk window.
+[project.gui-scripts]
+ticker = "ticker.ui.app:main"
+
+[project.scripts]
+ticker-sync = "ticker.ingest.sync:main"
+# File exports rather than APIs: Apple Health has no server side.
+ticker-import = "ticker.ingest.importer:main"
+# The two halves of the agent/server split. Both are optional: the app writes
+# to the database directly in the single-machine deployment, and neither of
+# these has to be running for it to work.
+ticker-server = "ticker.api.server:main"
+ticker-agent = "ticker.agent.main:main"
+ticker-setup = "ticker.auth.setup:main"
+ticker-rollup = "ticker.db.rollup:main"
+ticker-backfill = "ticker.db.backfill:main"
+
+[tool.setuptools]
+# The v1 modules are still top-level while they migrate into the package,
+# so both shapes have to be declared.
+packages = [
+    "ticker",
+    "ticker.agent",
+    "ticker.api",
+    "ticker.auth",
+    "ticker.db",
+    "ticker.ingest",
+    "ticker.sources",
+    "ticker.ui",
+]
+py-modules = [
+    "config",
+    "hr_source",
+    "ble_source",
+    "http_source",
+    "storage",
+]
+
+[tool.setuptools.package-data]
+# Read off disk at runtime, so they have to be installed alongside the code.
+"ticker.db" = ["schema.sql", "migrations/*.sql"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

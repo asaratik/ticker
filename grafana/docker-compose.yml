@@ -1,0 +1,37 @@
+# Grafana, provisioned against the Ticker database.
+#
+#   TICKER_DB_DIR=%LOCALAPPDATA%\Ticker docker compose up
+#
+# then http://localhost:3000 (anonymous, no login). The dashboards and the
+# datasource come from the files next to this one, so nothing has to be
+# clicked through to get a working view.
+#
+# Read-only would be the obvious choice for the data mount, and it does not
+# work: the database is in WAL mode, and a WAL reader has to create a -shm
+# file alongside it. So the directory is mounted writable and Grafana is
+# simply never asked to write -- SQLite needs the permission, Grafana does
+# not use it.
+
+services:
+  grafana:
+    image: grafana/grafana-oss:11.6.0
+    container_name: ticker-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_INSTALL_PLUGINS: frser-sqlite-datasource
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_DEFAULT_THEME: dark
+      # Open the overview dashboard on load rather than an empty home page.
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/dashboards/ticker-overview.json
+    volumes:
+      - ./provisioning:/etc/grafana/provisioning:ro
+      - ./dashboards:/etc/grafana/dashboards:ro
+      # The directory, not the file: SQLite needs its -wal and -shm siblings.
+      - ${TICKER_DB_DIR:-./data}:/var/lib/ticker
+      - grafana-storage:/var/lib/grafana
+
+volumes:
+  grafana-storage:
