@@ -1,15 +1,107 @@
 # Ticker
 
-A little desktop app for reading a heart rate monitor and logging what it
-sees. Works with anything that speaks the standard BLE Heart Rate Service
+Your health data, on your machine, in a form AI agents can use.
+
+Ticker gathers heart rate, HRV, sleep, steps, SpO2, weight and more from the
+devices and apps you already have — BLE chest straps and Garmin watches live,
+Oura and Fitbit through their APIs, Apple Health from an export — into one
+SQLite file on your own disk. Then it serves that file over the
+[Model Context Protocol](https://modelcontextprotocol.io), so Claude Code,
+Codex, Claude Desktop or any other MCP client can answer questions like
+*"how has my resting heart rate moved since I started running?"* or *"do I
+sleep worse after late workouts?"* from your real numbers.
+
+Windows, macOS, Linux. No Ticker account, no Ticker cloud.
+
+## Asking an agent
+
+```
+pipx install ticker
+ticker-setup add oura            # and/or fitbit; see "Cloud sources"
+ticker-sync --once               # pull what's there (drop --once to keep syncing)
+claude mcp add ticker -- ticker-mcp
+```
+
+Then ask Claude about your sleep. The agent launches `ticker-mcp` itself and
+talks to it over stdin/stdout; there's nothing to keep running for it. What
+*does* need to run is whatever collects the data — `ticker-sync` for cloud
+accounts, the app for a strap — and they can run at the same time: the MCP
+server is one more reader of the same file.
+
+Other clients:
+
+**Claude Code**, available in every project rather than just this one:
+
+```
+claude mcp add --scope user ticker -- ticker-mcp
+```
+
+**Codex**, in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.ticker]
+command = "ticker-mcp"
+```
+
+**Claude Desktop**, in `claude_desktop_config.json`:
+
+```json
+{ "mcpServers": { "ticker": { "command": "ticker-mcp" } } }
+```
+
+If a client can't find the command — desktop apps often don't inherit your
+shell's `PATH` — give it the full path from `which ticker-mcp` (`where` on
+Windows). From a source checkout, `pip install -e .` puts `ticker-mcp` on
+your `PATH`; `--db` points it at a database other than the default.
+
+**An agent on another machine.** `ticker-server` serves the same tools over
+HTTP at `/mcp`, behind its usual token (see "Running it on two machines"):
+
+```
+claude mcp add --transport http ticker http://homelab:8477/mcp \
+  --header "Authorization: Bearer <token>"
+```
+
+### What the agent gets
+
+| Tool | What it answers |
+|---|---|
+| `get_overview` | What's connected, which metrics exist, what dates they cover and how fresh they are — the agent's starting point |
+| `get_daily_summary` | Day, week or month values of up to eight metrics, with typical, lowest, highest and latest |
+| `get_sleep` | Night by night: bedtime, wake, time asleep, efficiency, stages, heart rate and HRV while asleep |
+| `list_sessions`, `get_session` | Workouts, recordings and sleeps, and what happened during each |
+| `get_timeseries` | Readings through a window — a workout, a night — bucketed to fit |
+| `query_sql` | Anything else, as read-only SQL |
+
+The tools were shaped for a model reading them rather than a chart: times
+come back in your local zone, every value carries its unit, series are
+bucketed to a point budget instead of dumping 600,000 rows into the
+agent's context, and anything that would mislead is said outright — two
+sources both counting your steps are listed side by side rather than added
+together, and a cloud account that stopped syncing is flagged. Sleep is
+rebuilt night by night from stage data, which is what lets Apple Health
+(stages, no sessions) and Oura (sessions and stages) answer the same way.
+
+`ticker-mcp` **cannot change your data.** It opens the database read-only,
+SQLite refuses writes on that connection, and an authorizer allows nothing
+but reads — so no `DELETE`, no `ATTACH`, no state-changing `PRAGMA`, whatever
+SQL the agent sends. Every call also has a time limit, so a runaway query
+fails rather than hangs. Connecting sources stays out of the agent's reach
+on purpose: tokens are entered at a terminal with `ticker-setup` and live
+in the OS keyring, never in anything a tool returns.
+
+## The recorder app
+
+A desktop app for reading a heart rate monitor and logging what it sees.
+Works with anything that speaks the standard BLE Heart Rate Service
 (Garmin, Polar, Wahoo, whatever) — no vendor SDK involved — or with a Garmin
 watch pushing readings over the network, which needs no Bluetooth or ANT+
-hardware on this machine at all. Windows, macOS, Linux.
+hardware on this machine at all.
 
 Live bpm on screen, a Start/Stop button to control what actually gets
-logged, and a SQLite file afterward you can point pandas at.
+logged, and everything lands in the same SQLite file the agents read.
 
-## Running it
+### Running it
 
 ```
 pip install -r requirements.txt
@@ -95,8 +187,9 @@ If you'd rather not deal with downloads and warnings at all:
 pipx install ticker
 ```
 
-which also gives you `ticker-sync`, `ticker-import`, `ticker-setup`,
-`ticker-rollup` and `ticker-backfill` on your PATH.
+which also gives you `ticker-mcp`, `ticker-sync`, `ticker-import`,
+`ticker-setup`, `ticker-server`, `ticker-rollup` and `ticker-backfill` on
+your PATH.
 
 Every release publishes `SHA256SUMS-<platform>.txt` so a download can be
 verified independently. Note that released binaries are **not currently code
@@ -222,6 +315,15 @@ Ticker is single-user and local-first: it does not host your database or
 send observations to a Ticker-operated service. Cloud connectors contact the
 vendor you configure, and the optional agent sends data only to the server
 URL you give it.
+
+An AI agent is the one exception worth spelling out. `ticker-mcp` runs on
+your machine and only reads, but whatever a tool returns becomes part of
+the agent's conversation, and so goes to the model provider behind that
+agent — Anthropic for Claude, OpenAI for Codex — under that provider's
+terms. The tools return summaries and bounded series rather than whole
+tables, but treat an agent session over your health data the way you would
+pasting the same numbers into a chat, and don't connect an agent you
+wouldn't show them to.
 
 The database contains health observations and compressed vendor responses;
 it is not encrypted at rest, so protect it and its backups like any other
@@ -445,8 +547,12 @@ GET  /api/sessions?from=&to=                       session list
 GET  /api/sources                                  configuration and sync health
 POST /api/ingest                                   agent push
 POST /api/sync/{source_id}                         sync a pull source now
+POST /mcp                                          MCP for agents (read-only)
 GET  /health                                       liveness, no token needed
 ```
+
+The token can arrive as an `X-Ticker-Token` header, `Authorization: Bearer`,
+or a `?token=` parameter; MCP clients know the middle one.
 
 ```
 curl 'http://127.0.0.1:8477/api/observations?metric=heart_rate_bpm&from=-6h&bucket=5m'
@@ -532,10 +638,12 @@ window opened), so it runs the same everywhere. This is what CI runs too,
 on `windows-latest`, `macos-latest` and `ubuntu-latest`.
 
 The HTTP tests are the exception to "no real I/O": the watch endpoint, the
-read API and the agent-to-server round trip each start a real server on
-`127.0.0.1` with port `0` (the OS picks a free one) and make real requests
+read API, `/mcp` and the agent-to-server round trip each start a real server
+on `127.0.0.1` with port `0` (the OS picks a free one) and make real requests
 to it, because the thing worth testing there is the wire contract something
-else will actually hit. Still no fixed port, no network peer, no hardware.
+else will actually hit. `ticker-mcp` likewise runs once as a real subprocess
+over pipes, which is how an agent launches it. Still no fixed port, no
+network peer, no hardware.
 
 Everything either side of those wires is tested without a socket: the API's
 endpoints take a parsed request and return a status, and the agent's uplink

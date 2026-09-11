@@ -5,11 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ticker"
 version = "0.2.0"
-description = "Local-first health data logger: BLE heart rate, vendor APIs, one SQLite file"
+description = "Your health data in one local SQLite file, served to AI agents over MCP"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-keywords = ["heart-rate", "bluetooth", "ble", "hrv", "oura", "quantified-self"]
+keywords = ["mcp", "heart-rate", "bluetooth", "ble", "hrv", "oura", "fitbit",
+            "apple-health", "quantified-self"]
 classifiers = [
     "Environment :: X11 Applications",
     "Intended Audience :: End Users/Desktop",
@@ -53,6 +54,10 @@ ticker-agent = "ticker.agent.main:main"
 ticker-setup = "ticker.auth.setup:main"
 ticker-rollup = "ticker.db.rollup:main"
 ticker-backfill = "ticker.db.backfill:main"
+# What an agent (Claude Code, Codex, Claude Desktop) launches: MCP over stdio,
+# read-only against the same database. ticker-server serves the same tools
+# over HTTP at /mcp for agents on other machines.
+ticker-mcp = "ticker.mcp.server:main"
 
 [tool.setuptools]
 # The v1 modules are still top-level while they migrate into the package,
@@ -64,6 +69,7 @@ packages = [
     "ticker.auth",
     "ticker.db",
     "ticker.ingest",
+    "ticker.mcp",
     "ticker.sources",
     "ticker.ui",
 ]

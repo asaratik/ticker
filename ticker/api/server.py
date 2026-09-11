@@ -17,6 +17,17 @@ The routing table is framework-independent by construction, so this stays a
 decision rather than a commitment: swapping in FastAPI is a new module of
 about this size and no change to `routes.py` at all.
 
+MCP
+---
+/mcp serves the same read-only tools as `ticker-mcp`, over MCP's Streamable
+HTTP transport, for an agent that can't launch a process on this machine --
+the homelab deployment, where the database lives on another box. Replies
+are plain JSON responses to POSTs; there is no event stream to GET, which
+the transport allows. The token check is the same as everywhere else, and
+also accepts `Authorization: Bearer`, which is what MCP clients know how to
+send. Requests carrying a foreign Origin are refused, as the MCP spec asks,
+so a web page can't reach the tools by rebinding a hostname to 127.0.0.1.
+
 Binding
 -------
 Loopback by default. Section 9.3 requires binding anywhere else to need an
@@ -41,10 +52,15 @@ from urllib.parse import parse_qs, urlparse
 from ticker import config as tconfig
 from ticker.api.routes import Api
 from ticker.db import store
+from ticker.mcp import protocol as mcp_protocol
+from ticker.mcp.server import build as build_mcp
 
 log = logging.getLogger("ticker.api")
 
 TOKEN_HEADER = "X-Ticker-Token"
+
+MCP_PATH = "/mcp"
+MCP_VERSION_HEADER = "MCP-Protocol-Version"
 
 # Largest request body accepted. An ingest batch of the default 5000
 # observations is well under a megabyte; this is the cap that stops an
@@ -120,6 +136,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "app": "Ticker"}, head_only)
             return
 
+        is_mcp = parsed.path.rstrip("/") == MCP_PATH
+        if is_mcp and not self._origin_allowed():
+            self._send(403, {"ok": False,
+                             "error": "cross-origin requests to /mcp are refused"})
+            return
+
         if not self._authorized(params):
             return
 
@@ -135,14 +157,57 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             body = self._read_body(length)
 
+        if is_mcp:
+            self._serve_mcp(method, body, head_only)
+            return
+
         status, payload = self.server.api.handle(method, parsed.path, params, body)
         self._send(status, payload, head_only)
+
+    def _serve_mcp(self, method: str, body: bytes, head_only: bool):
+        mcp = getattr(self.server, "mcp", None)
+        if mcp is None:
+            self._send(404, {"ok": False, "error": "MCP is not enabled here"},
+                       head_only)
+            return
+        if method != "POST":
+            self._send(405, {"ok": False,
+                             "error": "POST JSON-RPC messages to /mcp"},
+                       head_only, headers={"Allow": "POST"})
+            return
+        version = self.headers.get(MCP_VERSION_HEADER)
+        if version and version not in mcp_protocol.PROTOCOL_VERSIONS:
+            self._send(400, {"ok": False, "error": "unsupported {}: {}".format(
+                MCP_VERSION_HEADER, version)})
+            return
+        try:
+            message = json.loads(body.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
+            self._send(400, mcp_protocol.parse_error(str(exc)))
+            return
+        reply = mcp.handle(message)
+        if reply is None:
+            # Notifications and responses: accepted, nothing to say back.
+            self._send(202, None)
+        else:
+            self._send(200, reply)
+
+    def _origin_allowed(self) -> bool:
+        """No Origin means not a browser -- agents and curl send none. A
+        browser's Origin must be this machine, or a page elsewhere could
+        reach the tools through DNS rebinding."""
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        return (urlparse(origin).hostname or "") in LOOPBACK
 
     def _authorized(self, params: dict) -> bool:
         expected = self.server.token
         if not expected:
             return True
-        supplied = self.headers.get(TOKEN_HEADER) or params.get("token") or ""
+        supplied = (self.headers.get(TOKEN_HEADER)
+                    or _bearer(self.headers.get("Authorization"))
+                    or params.get("token") or "")
         if hmac.compare_digest(supplied, expected):
             return True
         self._send(401, {"ok": False, "error": "bad or missing token"})
@@ -179,15 +244,20 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             remaining -= len(chunk)
 
-    def _send(self, code: int, payload: dict, head_only: bool = False):
+    def _send(self, code: int, payload: Optional[dict], head_only: bool = False,
+              headers: Optional[dict] = None):
+        """Answer with `payload` as JSON, or with no body when it is None."""
         self._drain_request_body()
-        body = json.dumps(payload, default=str).encode("utf-8")
+        body = b"" if payload is None else json.dumps(payload, default=str).encode("utf-8")
         try:
             self.send_response(code)
-            self.send_header("Content-Type", "application/json")
+            if payload is not None:
+                self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            for name, value in (headers or {}).items():
+                self.send_header(name, value)
             self.end_headers()
-            if not head_only:
+            if body and not head_only:
                 self.wfile.write(body)
         except OSError:
             # The client hung up mid-answer. Normal for a dashboard whose
@@ -205,8 +275,10 @@ class ApiServer:
 
     def __init__(self, api: Api, host: Optional[str] = None,
                  port: Optional[int] = None, token: Optional[str] = None,
-                 allow_remote: Optional[bool] = None):
+                 allow_remote: Optional[bool] = None, mcp=None):
         self.api = api
+        # An McpServer to answer /mcp, or None to leave it unrouted.
+        self.mcp = mcp
         self.host = tconfig.API_HOST if host is None else host
         self.port = tconfig.API_PORT if port is None else port
         self.token = tconfig.API_TOKEN if token is None else token
@@ -225,6 +297,7 @@ class ApiServer:
         # durable is lost by cutting a connection.
         httpd.daemon_threads = True
         httpd.api = self.api
+        httpd.mcp = self.mcp
         httpd.token = self.token
         self._httpd = httpd
         self.port = httpd.server_address[1]
@@ -277,19 +350,31 @@ def thread_local_reader(db_path: Path):
 
 
 def build(db_path: Optional[Path] = None, writer=None, on_sync=None,
-          **kwargs) -> ApiServer:
+          mcp=None, **kwargs) -> ApiServer:
     """An ApiServer over a database, with its own writer unless given one.
 
     The single-machine deployment passes the app's existing AsyncStore so
     there is one writer thread for the process, which is what keeps the
     live stream and the API from interleaving commits.
+
+    /mcp gets the same read-only tools as ticker-mcp unless `mcp` says
+    otherwise. They open their own read-only connections rather than
+    borrowing the API's readers, which can write.
     """
     path = Path(db_path) if db_path else tconfig.DB_PATH
     store.connect(path).close()          # migrate once, before any reader
     if writer is None:
         writer = store.AsyncStore(path, migrate_first=False)
+    if mcp is None:
+        mcp, _db = build_mcp(path)
     api = Api(thread_local_reader(path), writer, on_sync=on_sync)
-    return ApiServer(api, **kwargs)
+    return ApiServer(api, mcp=mcp, **kwargs)
+
+
+def _bearer(header: Optional[str]) -> Optional[str]:
+    if header and header[:7].lower() == "bearer ":
+        return header[7:].strip()
+    return None
 
 
 def install_stop_handlers() -> threading.Event:
@@ -359,6 +444,7 @@ def main(argv=None) -> int:
         return 1
 
     log.info("serving %s over %s", db_path, server.url)
+    log.info("MCP for agents at %s%s", server.url, MCP_PATH)
     if not args.token and args.host not in LOOPBACK:
         log.warning("no token set")
     idle = install_stop_handlers()
