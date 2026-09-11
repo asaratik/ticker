@@ -103,16 +103,21 @@ class ToolSpec:
     properties: Dict[str, dict]
     required: Tuple[str, ...] = ()
 
-    def definition(self) -> dict:
+    def definition(self, compact: bool = False) -> dict:
+        properties, description = self.properties, self.description
+        if compact:
+            description = COMPACT_TOOLS[self.name]
+            properties = {name: _compact_property(name, prop)
+                          for name, prop in self.properties.items()}
         schema: Dict[str, Any] = {"type": "object",
-                                  "properties": self.properties,
+                                  "properties": properties,
                                   "additionalProperties": False}
         if self.required:
             schema["required"] = list(self.required)
         return {
             "name": self.name,
             "title": self.title,
-            "description": self.description,
+            "description": description,
             "inputSchema": schema,
             "annotations": {"title": self.title, "readOnlyHint": True,
                             "destructiveHint": False, "idempotentHint": True,
@@ -274,6 +279,53 @@ SPECS = (
 )
 
 
+# -- the compact profile ------------------------------------------------------
+#
+# What a small local model is shown. The full definitions are written for a
+# frontier model and cost a few thousand tokens before a question is asked --
+# a real share of a 8k context. Compact keeps the tools that answer most
+# questions, in a sentence each, and drops query_sql: correct SQL against an
+# unfamiliar schema is where small models fail most, and its schema text is
+# the single largest definition. Calls also default to smaller answers.
+
+PROFILES = ("full", "compact")
+
+COMPACT_TOOLS = {
+    "get_overview": "Start here: connected sources, which metrics exist with "
+                    "units and dates, and how fresh the data is.",
+    "get_daily_summary": "Per-day (or week/month) values of up to 8 metrics over "
+                         "a date range, with typical, lowest and highest day.",
+    "get_sleep": "Sleep per night: bedtime, wake, minutes asleep, stages, "
+                 "efficiency, heart rate while asleep.",
+    "get_timeseries": "Readings of one metric through a time window, bucketed.",
+    "list_sessions": "Workouts, recordings and sleeps in a time window, newest first.",
+    "get_session": "One session in detail, by its id from list_sessions.",
+}
+
+_COMPACT_PARAMS = {
+    "start": "e.g. -7d, 2026-09-01, yesterday",
+    "end": "default: now",
+    "metrics": "metric names from get_overview",
+    "metric": "a metric name from get_overview",
+    "bucket": "e.g. 5m, 1h, 1d",
+    "source_id": "optional",
+    "kind": "manual, workout or sleep",
+    "session_id": "an id from list_sessions",
+}
+
+COMPACT_INSTRUCTIONS = """\
+Ticker holds the user's own health data (heart rate, HRV, sleep, steps, \
+SpO2, weight and more). Call get_overview first to see what exists. Times \
+are local. Say when data is thin, and don't present it as medical advice."""
+
+
+def _compact_property(name: str, prop: dict) -> dict:
+    slim = {key: value for key, value in prop.items() if key != "description"}
+    if name in _COMPACT_PARAMS:
+        slim["description"] = _COMPACT_PARAMS[name]
+    return slim
+
+
 # -- argument helpers -------------------------------------------------------
 
 def _check_arguments(spec: ToolSpec, args: Dict[str, Any]) -> None:
@@ -358,18 +410,33 @@ class Tools:
 
     def __init__(self, db, zone: Optional[tzinfo] = None,
                  now: Callable[[], datetime] = now_utc,
-                 sql_budget_sec: float = SQL_BUDGET_SEC):
+                 sql_budget_sec: float = SQL_BUDGET_SEC,
+                 profile: str = "full"):
+        if profile not in PROFILES:
+            raise ValueError("profile must be one of: {}".format(", ".join(PROFILES)))
         self.db = db
         self.zone = zone or tconfig.local_zone()
         self.now = now
         self.sql_budget_sec = sql_budget_sec
-        self._specs = {spec.name: spec for spec in SPECS}
+        self.profile = profile
+        self.compact = profile == "compact"
+        self._specs = {spec.name: spec for spec in SPECS
+                       if not self.compact or spec.name in COMPACT_TOOLS}
+        # Defaults for what a call leaves unsaid. Compact answers are sized
+        # for a small model's context; the full ones for a large model's.
+        self.default_points = 60 if self.compact else MAX_POINTS_DEFAULT
+        self.default_trace_points = 40 if self.compact else 120
+        self.default_sessions = 10 if self.compact else SESSIONS_DEFAULT
+        self.default_nights = 7 if self.compact else 14
+        self.auto_day_rows = 31 if self.compact else 92
+        self.auto_week_rows = 365 if self.compact else 730
 
     def __contains__(self, name: str) -> bool:
         return name in self._specs
 
     def definitions(self) -> List[dict]:
-        return [spec.definition() for spec in SPECS]
+        return [spec.definition(self.compact) for spec in SPECS
+                if spec.name in self._specs]
 
     def call(self, name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         spec = self._specs.get(name)
@@ -539,7 +606,7 @@ class Tools:
             notes.append(
                 "No daily rollups yet for {}: get_daily_summary computes those "
                 "days from raw readings instead, which is slower over long "
-                "ranges. `ticker-rollup --all` builds them.".format(
+                "ranges. `ticker rollup --all` builds them.".format(
                     ", ".join(unrolled)))
 
         metric_ids = [row[0] for row in metrics]
@@ -570,8 +637,9 @@ class Tools:
                 if enabled and last and now - parse_iso(last) > STALE_PULL:
                     notes.append(
                         "{} has delivered nothing since {}; if that's "
-                        "unexpected, check that `ticker-sync` is "
-                        "running.".format(display, self._local(last)))
+                        "unexpected, check the account on Ticker's page, and "
+                        "that Ticker is running (`ticker status`).".format(
+                            display, self._local(last)))
             source_rows.append(entry)
 
         sessions = {
@@ -582,20 +650,25 @@ class Tools:
 
         if not metric_rows:
             notes.append(
-                "No data yet. Sources are connected outside the agent: the "
-                "Ticker app for a BLE strap or watch, `ticker-setup add oura` "
-                "or `ticker-setup add fitbit` then `ticker-sync` for cloud "
-                "accounts, `ticker-import apple_health export.zip` for Apple "
-                "Health.")
-        return {
+                "No data yet. Sources are connected on Ticker's page, not "
+                "through an agent: start `ticker`, then use Connect for Oura, "
+                "Fitbit or an Apple Health export, or turn on a strap or "
+                "watch under Live heart rate.")
+        result = {
             "now": self._local(now),
             "timezone": zone_name(self.zone),
             "sources": source_rows,
             "metrics": metric_rows,
-            "metrics_without_data": empty,
             "sessions": sessions,
             "notes": notes,
         }
+        if self.compact:
+            # A small model's context is better spent on data than on prose.
+            for row in metric_rows:
+                row.pop("description", None)
+        else:
+            result["metrics_without_data"] = empty
+        return result
 
     # -- get_daily_summary -----------------------------------------------
 
@@ -625,7 +698,8 @@ class Tools:
         group = _str(args, "group_by", "auto",
                      choices=("auto", "day", "week", "month"))
         if group == "auto":
-            group = "day" if span <= 92 else "week" if span <= 730 else "month"
+            group = ("day" if span <= self.auto_day_rows else
+                     "week" if span <= self.auto_week_rows else "month")
         if group == "day" and span > MAX_DAY_ROWS:
             raise ToolError("{} days is too many to list one by one; use "
                             "group_by 'week' or 'month'".format(span))
@@ -727,11 +801,11 @@ class Tools:
                     values.update(self._live_days(conn, metric_id, settled))
                     note = ("Daily rollups haven't been built for this range, "
                             "so days were computed from raw readings; "
-                            "`ticker-rollup --all` builds them.")
+                            "`ticker rollup --all` builds them.")
                 else:
                     note = ("Daily rollups haven't been built for this range "
                             "and it is too long to compute live; run "
-                            "`ticker-rollup --all`, or ask for a shorter "
+                            "`ticker rollup --all`, or ask for a shorter "
                             "range.")
         values.update(self._live_days(conn, metric_id, recent))
         return values, note
@@ -806,7 +880,7 @@ class Tools:
         if until - since > timedelta(days=MAX_DAYS):
             raise ToolError("windows over {} days aren't served; use "
                             "get_daily_summary".format(MAX_DAYS))
-        max_points = _int(args, "max_points", MAX_POINTS_DEFAULT, 10,
+        max_points = _int(args, "max_points", self.default_points, 10,
                           MAX_POINTS_LIMIT)
         source_id = self._source_arg(conn, args)
         out: Dict[str, Any] = {
@@ -907,7 +981,7 @@ class Tools:
         if since > until:
             raise ToolError("start is after end")
         kind = _str(args, "kind")
-        limit = _int(args, "limit", SESSIONS_DEFAULT, 1, SESSIONS_MAX)
+        limit = _int(args, "limit", self.default_sessions, 1, SESSIONS_MAX)
 
         where = ["s.start_ts < ?", "(s.end_ts IS NULL OR s.end_ts >= ?)"]
         params: List[Any] = [iso_utc(until), iso_utc(since)]
@@ -948,7 +1022,7 @@ class Tools:
     def _get_session(self, conn: sqlite3.Connection,
                      args: Dict[str, Any]) -> Dict[str, Any]:
         session_id = _int(args, "session_id", None, 1, 2 ** 62)
-        max_points = _int(args, "max_points", 120, 10, 1000)
+        max_points = _int(args, "max_points", self.default_trace_points, 10, 1000)
         row = conn.execute(
             "SELECT s.source_id, s.kind, s.label, s.start_ts, s.end_ts, "
             "       src.display_name, d.name, d.model, "
@@ -1023,7 +1097,8 @@ class Tools:
                    args: Dict[str, Any]) -> Dict[str, Any]:
         today = self._today()
         until = self._day(args, "end", today)
-        since = self._day(args, "start", until - timedelta(days=13))
+        since = self._day(args, "start",
+                          until - timedelta(days=self.default_nights - 1))
         if since > until:
             raise ToolError("start ({}) is after end ({})".format(since, until))
         if (until - since).days + 1 > MAX_SLEEP_DAYS:

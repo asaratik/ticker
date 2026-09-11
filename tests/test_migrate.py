@@ -46,7 +46,7 @@ def connect(db_path):
 
 def test_fresh_database_gets_the_full_schema(tmp_path):
     db = tmp_path / "fresh.sqlite3"
-    assert migrate.migrate(db) == [1, 2]
+    assert migrate.migrate(db) == [1, 2, 3]
 
     conn = connect(db)
     try:
@@ -55,7 +55,7 @@ def test_fresh_database_gets_the_full_schema(tmp_path):
         assert {"sources", "devices", "metrics", "sessions", "observations",
                 "sync_state", "raw_payloads", "rollups_daily",
                 "schema_version"} <= tables
-        assert conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0] == 12
+        assert conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0] == 15
         assert migrate.current_version(conn) == migrate.LATEST_VERSION
     finally:
         conn.close()
@@ -104,7 +104,7 @@ def test_v1_heart_rate_becomes_observations(tmp_path):
         ("2026-01-01T00:00:00.000+00:00", 80, []),
         ("2026-01-01T00:00:01.000+00:00", 82, []),
     ])])
-    assert migrate.migrate(db) == [2]
+    assert migrate.migrate(db) == [2, 3]
 
     conn = connect(db)
     try:
@@ -287,7 +287,7 @@ def test_failed_verification_rolls_the_whole_migration_back(tmp_path, monkeypatc
 
     # And a corrected run still works on the same file.
     monkeypatch.setattr(migrate, "_copy_v1_data", real_copy)
-    assert migrate.migrate(db, backup=False) == [2]
+    assert migrate.migrate(db, backup=False) == [2, 3]
 
 
 def test_verification_checks_counts_bounds_and_mean(tmp_path):
@@ -391,7 +391,7 @@ def test_every_migration_is_recorded_with_a_timestamp(tmp_path):
             "SELECT version, applied_at FROM schema_version ORDER BY version").fetchall()
     finally:
         conn.close()
-    assert [v for v, _ in rows] == [1, 2]
+    assert [v for v, _ in rows] == [1, 2, 3]
     for _, applied_at in rows:
         parse_iso(applied_at)   # must be a canonical timestamp, not datetime('now')
 

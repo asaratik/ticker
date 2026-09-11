@@ -69,10 +69,6 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
 
-      - name: Install Tk (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y python3-tk
-
       - name: Build (onedir)
         run: python build.py
 

@@ -287,7 +287,7 @@ def test_overview_reports_sources_metrics_and_sessions(tools, db, strap, ring):
 def test_overview_on_an_empty_database_says_how_to_connect(tools):
     result = tools.call("get_overview", {})
     assert result["metrics"] == []
-    assert any("ticker-setup" in note for note in result["notes"])
+    assert any("Connect" in note for note in result["notes"])
 
 
 def test_overview_flags_a_cloud_source_that_stopped_delivering(tools, db, ring):
@@ -330,7 +330,7 @@ def test_unrolled_history_is_computed_from_raw_with_a_note(tools, db, strap):
         "metrics": ["heart_rate_bpm"], "start": "2026-05-01",
         "end": "2026-05-05"})["results"]
     assert metric["series"][0]["rows"] == [["2026-05-03", 50, 50, 50, 1]]
-    assert any("ticker-rollup" in note for note in metric["notes"])
+    assert any("ticker rollup" in note for note in metric["notes"])
 
 
 def test_two_sources_counting_steps_are_not_added_together(tools, db, strap, ring):

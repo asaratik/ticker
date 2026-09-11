@@ -306,7 +306,7 @@ def available() -> List[Tuple[int, str, Path]]:
     return found
 
 
-LATEST_VERSION = 2
+LATEST_VERSION = 3
 
 
 def current_version(conn: sqlite3.Connection) -> int:

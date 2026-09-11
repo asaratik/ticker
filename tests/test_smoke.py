@@ -1,7 +1,6 @@
 """
 Import-only smoke tests -- catch syntax/import breakage across every module
-without needing real hardware, a network peer, or an actual Tk window
-(which would need a display and isn't created at import time).
+without needing real hardware, a network peer, or a browser.
 """
 
 
@@ -27,7 +26,8 @@ def test_storage_imports():
     assert hasattr(storage, "AsyncSessionStore")
 
 
-def test_ui_app_imports_without_creating_a_window():
-    from ticker.ui import app
-    assert hasattr(app, "HRApp")
-    assert hasattr(app, "main")
+def test_the_app_imports_without_starting_anything():
+    from ticker.app import main, runtime, web
+    assert hasattr(main, "main") and hasattr(main, "gui_main")
+    assert hasattr(runtime, "Runtime")
+    assert (web.STATIC_DIR / "index.html").is_file()

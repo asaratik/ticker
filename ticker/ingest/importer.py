@@ -1,8 +1,12 @@
 """
 Import a file export into the database.
 
-    python -m ticker.ingest.importer apple_health export.zip
-    python -m ticker.ingest.importer apple_health export.xml --name "iPhone"
+    ticker import export.zip                 # Apple Health, detected
+    ticker import garmin-export.zip          # Garmin's data export, detected
+    ticker import activity.fit
+    ticker import apple_health export.xml --name "iPhone"
+
+(Or from the page: Connect -> Import a file, which runs this in the app.)
 
 The counterpart to `ticker.ingest.sync` for sources that have no API to
 poll. Section 7's Apple Health row is the case this exists for: there is no
@@ -24,6 +28,7 @@ import argparse
 import logging
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 from ticker import config as tconfig
@@ -31,13 +36,40 @@ from ticker.db import store
 from ticker.ingest.normalizer import Normalizer
 from ticker.sources.apple_health import AppleHealthSource
 from ticker.sources.base import PermanentError
+from ticker.sources.garmin_files import GarminFiles
 
 log = logging.getLogger("ticker.importer")
 
-# vendor -> (factory, default display name)
+# vendor -> (factory, default display name). Garmin's files are named apart
+# from a Garmin Connect account ("Garmin"), so the two are separate sources
+# and a day both report is never added together.
 IMPORTERS = {
     "apple_health": (AppleHealthSource, "Apple Health"),
+    "garmin": (GarminFiles, "Garmin files"),
 }
+
+
+def detect(path: Path) -> str:
+    """Which importer a file is for, from its name and -- for a zip -- what
+    is inside it."""
+    path = Path(path)
+    suffix = path.suffix.lower()
+    if suffix == ".fit":
+        return "garmin"
+    if suffix == ".xml":
+        return "apple_health"
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as archive:
+            names = [name.lower() for name in archive.namelist()]
+        if any(name.endswith("export.xml") for name in names):
+            return "apple_health"
+        if any(name.startswith("di_connect/") or "/di_connect/" in name
+               or name.endswith(".fit") for name in names):
+            return "garmin"
+    raise PermanentError(
+        "can't tell what {} is. Ticker imports Apple Health exports "
+        "(export.zip or export.xml), Garmin's data export, and .fit "
+        "files.".format(path.name))
 
 
 def run_import(conn, writer, vendor: str, path: Path,
@@ -55,6 +87,10 @@ def run_import(conn, writer, vendor: str, path: Path,
 
     source_id = store.ensure_source(conn, "import", vendor, name)
     connector = factory(on_progress=progress)
+    if hasattr(connector, "on_session"):
+        # Workouts in a file become sessions. Straight to the writer, which
+        # applies work in order -- ahead of the readings that refer to them.
+        connector.on_session = lambda record: writer.begin_session(source_id, record)
     normalizer = Normalizer(writer, source_id)
 
     started = time.monotonic()
@@ -76,8 +112,10 @@ def run_import(conn, writer, vendor: str, path: Path,
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("vendor", choices=sorted(IMPORTERS))
-    parser.add_argument("path", type=Path, help="the export file or zip")
+    parser.add_argument("target", nargs="+", metavar="[FORMAT] PATH",
+                        help="the file to import, optionally after its format "
+                             "({}); left out, it is worked out from the "
+                             "file".format(", ".join(sorted(IMPORTERS))))
     parser.add_argument("--name", default="",
                         help="display name, if you import from more than one "
                              "device")
@@ -90,9 +128,21 @@ def main(argv=None) -> int:
         level=logging.WARNING if args.quiet else logging.INFO,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
-    if not args.path.exists():
-        print("no such file: {}".format(args.path), file=sys.stderr)
+    if len(args.target) == 2 and args.target[0] in IMPORTERS:
+        vendor, path = args.target[0], Path(args.target[1])
+    elif len(args.target) == 1:
+        vendor, path = None, Path(args.target[0])
+    else:
+        parser.error("give the file to import, optionally after its format")
+    if not path.exists():
+        print("no such file: {}".format(path), file=sys.stderr)
         return 1
+    if vendor is None:
+        try:
+            vendor = detect(path)
+        except PermanentError as exc:
+            print(exc, file=sys.stderr)
+            return 1
 
     def progress(count):
         # A gigabyte export takes minutes; silence for that long looks like
@@ -103,7 +153,7 @@ def main(argv=None) -> int:
     conn = store.connect(db_path)
     writer = store.AsyncStore(db_path, migrate_first=False)
     try:
-        summary = run_import(conn, writer, args.vendor, args.path,
+        summary = run_import(conn, writer, vendor, path,
                              display_name=args.name,
                              progress=None if args.quiet else progress)
     except PermanentError as exc:

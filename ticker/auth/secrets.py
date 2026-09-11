@@ -101,6 +101,53 @@ def delete_secret(ref: str, service: str = SERVICE) -> bool:
         return False
 
 
+# Windows' credential store holds at most 2,560 bytes per entry, and some
+# sessions -- Garmin's tokens -- are bigger than that. A large secret is
+# split across numbered entries, under a small index entry that says how
+# many; a secret stored whole reads back through the same call.
+CHUNK = 1000
+_INDEX = "chunks:"
+
+
+def set_large_secret(ref: str, secret: str, service: str = SERVICE) -> None:
+    old = _chunk_count(ref, service)
+    parts = [secret[i:i + CHUNK] for i in range(0, len(secret), CHUNK)] or [""]
+    for index, part in enumerate(parts):
+        set_secret("{}#{}".format(ref, index), part, service)
+    # The index last, so a reader never sees a count its parts don't match.
+    set_secret(ref, _INDEX + str(len(parts)), service)
+    for index in range(len(parts), old):
+        delete_secret("{}#{}".format(ref, index), service)
+
+
+def get_large_secret(ref: str, service: str = SERVICE) -> Optional[str]:
+    head = get_secret(ref, service)
+    if head is None or not head.startswith(_INDEX):
+        return head
+    parts = [get_secret("{}#{}".format(ref, index), service)
+             for index in range(_chunk_count(ref, service))]
+    if any(part is None for part in parts):
+        return None
+    return "".join(parts)
+
+
+def delete_large_secret(ref: str, service: str = SERVICE) -> bool:
+    """Remove a secret however it was stored. True if something was removed."""
+    for index in range(_chunk_count(ref, service)):
+        delete_secret("{}#{}".format(ref, index), service)
+    return delete_secret(ref, service)
+
+
+def _chunk_count(ref: str, service: str) -> int:
+    head = get_secret(ref, service)
+    if head is None or not head.startswith(_INDEX):
+        return 0
+    try:
+        return int(head[len(_INDEX):])
+    except ValueError:
+        return 0
+
+
 def auth_ref(vendor: str, display_name: str) -> str:
     """The keyring entry name for a configured source.
 

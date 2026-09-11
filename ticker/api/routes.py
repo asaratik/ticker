@@ -288,8 +288,9 @@ class Api:
                          "error": "source {} is disabled".format(source_id)}
         if self.on_sync is None:
             return 503, {"ok": False,
-                         "error": "no scheduler in this process; run "
-                                  "'ticker-sync' to sync pull sources"}
+                         "error": "no scheduler in this process: start "
+                                  "Ticker itself (`ticker`), which syncs "
+                                  "cloud accounts, or run `ticker sync --once`"}
         if not self.on_sync(source_id):
             return 409, {"ok": False,
                          "error": "source {} is already syncing".format(source_id)}

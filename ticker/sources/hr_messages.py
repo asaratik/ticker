@@ -4,8 +4,8 @@ v1 heart rate messages -> v2 observations.
 hr_source defines a small message protocol that both live sources speak: a
 BLE strap and a watch POSTing over HTTP push the same dicts onto the same
 queue. Two things consume that protocol now -- the BLE StreamSource, and the
-Tk app draining its queue on the UI thread -- so the translation lives here
-rather than in either of them.
+app's live monitor draining its queue on its own thread -- so the
+translation lives here rather than in either of them.
 
 The v1 protocol is not going away when the connectors are rewritten as
 StreamSources: it is what the HTTP source still speaks, and what the agent

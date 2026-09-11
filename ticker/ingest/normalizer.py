@@ -41,6 +41,9 @@ SANITY_RANGES: Dict[str, Tuple[float, float]] = {
     "sleep_duration_s": (0.0, 24 * 3600.0),
     "weight_kg": (10.0, 500.0),
     "body_fat_pct": (1.0, 75.0),
+    "resting_heart_rate_bpm": (20.0, 150.0),
+    "stress_level": (0.0, 100.0),
+    "body_battery": (0.0, 100.0),
 }
 
 

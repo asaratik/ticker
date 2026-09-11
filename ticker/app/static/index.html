@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ticker</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/static/app.css">
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="brand-mark" aria-hidden="true">&#9829;</span>Ticker</div>
+  <div class="bar-status" id="app-status" role="status">Starting&hellip;</div>
+  <button class="btn ghost" id="quit" type="button">Stop Ticker</button>
+</header>
+
+<main class="grid" id="main">
+  <section class="card wide ask" aria-labelledby="ask-title">
+    <div class="card-head">
+      <h2 id="ask-title">Ask your data</h2>
+      <button class="linkish" id="ask-settings-toggle" type="button" aria-expanded="false" aria-controls="ask-settings">Model settings</button>
+    </div>
+    <div class="ask-settings" id="ask-settings" hidden>
+      <form class="row" id="ask-config-form">
+        <label class="field grow">
+          <span class="field-label">Model server</span>
+          <input id="ask-url" type="text" spellcheck="false" autocomplete="off" placeholder="http://127.0.0.1:11434">
+        </label>
+        <label class="field">
+          <span class="field-label">Model</span>
+          <select id="ask-model"></select>
+        </label>
+        <button class="btn" type="submit">Save</button>
+      </form>
+      <p class="hint">Ollama by default. For LM Studio, llama.cpp or vLLM, give a URL ending in <code>/v1</code>. Pick a model that can call tools &mdash; qwen3, llama3.1 or mistral; 14B and up answers best.</p>
+    </div>
+    <p class="status-line" id="ask-status"></p>
+    <ol class="conversation" id="ask-log" aria-live="polite"></ol>
+    <div class="suggestions" id="ask-suggestions">
+      <button type="button" class="chip">How did I sleep this week?</button>
+      <button type="button" class="chip">What did my heart rate look like today?</button>
+      <button type="button" class="chip">Compare my steps this week with last week.</button>
+    </div>
+    <form class="ask-form" id="ask-form">
+      <input id="ask-input" type="text" maxlength="1000" autocomplete="off" placeholder="Ask about your sleep, heart rate, steps&hellip;" aria-label="Your question">
+      <button class="btn primary" id="ask-button" type="submit">Ask</button>
+    </form>
+  </section>
+
+  <section class="card live" aria-labelledby="live-title">
+    <div class="card-head">
+      <h2 id="live-title">Live heart rate</h2>
+      <div class="segmented" id="live-source" role="radiogroup" aria-label="Live source">
+        <button type="button" role="radio" data-source="off">Off</button>
+        <button type="button" role="radio" data-source="ble">Bluetooth strap</button>
+        <button type="button" role="radio" data-source="http">Watch over Wi-Fi</button>
+      </div>
+    </div>
+    <p class="status-line" id="live-status"></p>
+
+    <div class="hero" aria-live="polite">
+      <span class="hero-value" id="bpm">--</span><span class="hero-unit">bpm</span>
+    </div>
+
+    <form class="session" id="session-form">
+      <label class="field grow">
+        <span class="field-label">Session label</span>
+        <input id="session-label" type="text" maxlength="80" placeholder="Morning ride" autocomplete="off">
+      </label>
+      <button class="btn primary" id="session-toggle" type="submit" disabled>Start session</button>
+    </form>
+
+    <div class="tiles" id="session-tiles" hidden>
+      <div class="tile"><span class="tile-label">Average</span><span class="tile-value" id="tile-avg">--</span></div>
+      <div class="tile"><span class="tile-label">Lowest</span><span class="tile-value" id="tile-min">--</span></div>
+      <div class="tile"><span class="tile-label">Highest</span><span class="tile-value" id="tile-max">--</span></div>
+      <div class="tile"><span class="tile-label">Time</span><span class="tile-value" id="tile-time">0:00</span></div>
+    </div>
+
+    <figure class="chart">
+      <figcaption class="chart-caption">
+        <span>Last 5 minutes</span>
+        <button class="linkish" id="chart-table-toggle" type="button" aria-expanded="false" aria-controls="chart-table">Table view</button>
+      </figcaption>
+      <div class="chart-box" id="chart" tabindex="0" aria-describedby="chart-help">
+        <div class="tooltip" id="chart-tip" hidden></div>
+      </div>
+      <p class="visually-hidden" id="chart-help">Use the left and right arrow keys to step through readings.</p>
+      <div class="table-wrap" id="chart-table" hidden></div>
+    </figure>
+    <p class="hint" id="live-hint"></p>
+  </section>
+
+  <section class="card" aria-labelledby="sources-title">
+    <h2 id="sources-title">Sources</h2>
+    <ul class="sources" id="sources"></ul>
+    <ul class="jobs" id="jobs"></ul>
+
+    <h3 class="subhead">Connect</h3>
+    <div class="connect">
+      <details class="connect-item" id="connect-oura">
+        <summary>Oura ring</summary>
+        <form class="stack" id="oura-form">
+          <label class="field">
+            <span class="field-label">Personal access token</span>
+            <input id="oura-token" type="password" autocomplete="off" required>
+          </label>
+          <label class="field">
+            <span class="field-label">Name <span class="muted">(optional, if you have more than one)</span></span>
+            <input id="oura-name" type="text" maxlength="60" placeholder="Ring" autocomplete="off">
+          </label>
+          <div class="row">
+            <button class="btn primary" type="submit">Connect Oura</button>
+            <a class="linkish" href="https://cloud.ouraring.com/personal-access-tokens" target="_blank" rel="noopener noreferrer">Get a token</a>
+          </div>
+          <p class="hint">The token goes into your OS keyring, never the database.</p>
+        </form>
+      </details>
+
+      <details class="connect-item" id="connect-fitbit">
+        <summary>Fitbit</summary>
+        <div class="stack">
+          <p class="hint" id="fitbit-note">Opens Fitbit's sign-in in a new tab; Ticker picks the account up once you approve.</p>
+          <div class="row">
+            <button class="btn primary" id="fitbit-button" type="button">Sign in with Fitbit</button>
+          </div>
+        </div>
+      </details>
+
+      <details class="connect-item" id="connect-garmin">
+        <summary>Garmin Connect</summary>
+        <form class="stack" id="garmin-form">
+          <p class="hint" id="garmin-note">Signs in the way Garmin's own app does, through the community garminconnect library: automatic, but unofficial, and Garmin has broken it before. Your password is used once and never stored. If it stops working, import Garmin's data export below &mdash; nothing already recorded is lost.</p>
+          <label class="field">
+            <span class="field-label">Garmin email</span>
+            <input id="garmin-email" type="email" autocomplete="username" required>
+          </label>
+          <label class="field">
+            <span class="field-label">Password</span>
+            <input id="garmin-password" type="password" autocomplete="current-password" required>
+          </label>
+          <div class="row">
+            <button class="btn primary" id="garmin-button" type="submit">Sign in to Garmin</button>
+          </div>
+        </form>
+        <form class="stack" id="garmin-code-form" hidden>
+          <label class="field">
+            <span class="field-label">Code Garmin sent you</span>
+            <input id="garmin-code" type="text" inputmode="numeric" autocomplete="one-time-code" required>
+          </label>
+          <div class="row">
+            <button class="btn primary" type="submit">Continue</button>
+          </div>
+        </form>
+      </details>
+
+      <details class="connect-item" id="connect-apple">
+        <summary>Import a file &middot; Apple Health, Garmin</summary>
+        <form class="stack" id="apple-form">
+          <p class="hint"><strong>Apple Health:</strong> on your iPhone, Health &rarr; your picture &rarr; Export All Health Data, and copy <code>export.zip</code> here. <strong>Garmin:</strong> <a class="linkish" href="https://www.garmin.com/en-US/account/datamanagement/exportdata/" target="_blank" rel="noopener noreferrer">request your data</a> and use the zip Garmin emails you, or a <code>.fit</code> file from the watch. Importing a newer file later adds only what's new.</p>
+          <label class="field">
+            <span class="field-label">Path to the file</span>
+            <input id="apple-path" type="text" placeholder="/path/to/export.zip" autocomplete="off" spellcheck="false" required>
+          </label>
+          <div class="row">
+            <button class="btn primary" type="submit">Import</button>
+          </div>
+        </form>
+      </details>
+      <p class="hint">A chest strap or a Garmin watch? Turn it on under Live heart rate.</p>
+    </div>
+    <p class="form-message" id="connect-message" role="status"></p>
+  </section>
+
+  <section class="card" aria-labelledby="agents-title">
+    <h2 id="agents-title">Ask an agent</h2>
+    <p class="lede">Connect Claude Code, Codex or Claude Desktop, then ask about your sleep, training or trends. Agents can read everything here and change nothing.</p>
+    <div class="snippet">
+      <div class="snippet-head"><span>Claude Code</span><button class="linkish copy" type="button" data-copy="agent-claude">Copy</button></div>
+      <pre id="agent-claude"></pre>
+    </div>
+    <div class="snippet">
+      <div class="snippet-head"><span>Codex &middot; <code>~/.codex/config.toml</code></span><button class="linkish copy" type="button" data-copy="agent-codex">Copy</button></div>
+      <pre id="agent-codex"></pre>
+    </div>
+    <div class="snippet">
+      <div class="snippet-head"><span>Claude Desktop &middot; <code>claude_desktop_config.json</code></span><button class="linkish copy" type="button" data-copy="agent-desktop">Copy</button></div>
+      <pre id="agent-desktop"></pre>
+    </div>
+    <div class="snippet">
+      <div class="snippet-head"><span>Over HTTP &middot; the packaged app, or another machine</span><button class="linkish copy" type="button" data-copy="agent-http">Copy</button></div>
+      <pre id="agent-http"></pre>
+    </div>
+    <div class="snippet">
+      <div class="snippet-head"><span>Open WebUI and other local-model clients &middot; compact tools</span><button class="linkish copy" type="button" data-copy="agent-local">Copy</button></div>
+      <pre id="agent-local"></pre>
+    </div>
+    <p class="hint">Whatever a tool returns becomes part of the agent's conversation, and so goes to the model provider behind it. The Ask box above keeps it on this machine when the model does.</p>
+  </section>
+
+  <section class="card wide" aria-labelledby="data-title">
+    <h2 id="data-title">What's recorded</h2>
+    <ul class="notes" id="notes"></ul>
+    <div class="table-wrap" id="metrics"></div>
+  </section>
+</main>
+
+<footer class="foot" id="foot"></footer>
+</body>
+</html>

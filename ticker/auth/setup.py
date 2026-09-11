@@ -30,12 +30,31 @@ from typing import Optional
 from ticker import config as tconfig
 from ticker.auth import secrets
 from ticker.db import store
+from ticker.sources.base import SourceError
 
 # Vendors this can configure: kind, default display name, auth style.
 VENDORS = {
     "oura": ("pull", "Ring", "token"),
     "fitbit": ("pull", "Fitbit", "oauth"),
+    "garmin": ("pull", "Garmin", "password"),
 }
+
+
+def add_password(conn, vendor: str, display_name: str, email: str,
+                 password: str, prompt_mfa, library=None) -> int:
+    """Sign in with an account's email and password -- once -- and keep the
+    session it yields. The password itself is never stored."""
+    from ticker.sources import garmin
+
+    if vendor != "garmin":
+        raise ValueError("no password sign-in for {!r}".format(vendor))
+    kind, _default, _style = VENDORS[vendor]
+    ref = secrets.auth_ref(vendor, display_name)
+    garmin.sign_in(email, password, ref, prompt_mfa, library=library)
+    source_id = store.ensure_source(conn, kind, vendor, display_name, auth_ref=ref)
+    conn.execute("UPDATE sources SET auth_ref = ?, enabled = 1 WHERE id = ?",
+                 (ref, source_id))
+    return source_id
 
 
 def add(conn, vendor: str, display_name: str,
@@ -121,7 +140,7 @@ def remove(conn, vendor: str, display_name: str) -> bool:
     should mean.
     """
     ref = secrets.auth_ref(vendor, display_name)
-    secrets.delete_secret(ref)
+    secrets.delete_large_secret(ref)          # however it was stored
     cur = conn.execute(
         "UPDATE sources SET enabled = 0 WHERE vendor = ? AND display_name = ?",
         (vendor, display_name))
@@ -183,9 +202,15 @@ def _dispatch(conn, args) -> int:
         try:
             if style == "oauth":
                 source_id = add_oauth(conn, args.vendor, name)
+            elif style == "password":
+                # For a box with no browser: the same sign-in as the page.
+                source_id = add_password(
+                    conn, args.vendor, name, input("{} email: ".format(args.vendor)),
+                    getpass.getpass("password (input hidden): "),
+                    prompt_mfa=lambda: input("code {} sent you: ".format(args.vendor)))
             else:
                 source_id = add(conn, args.vendor, name)
-        except (ValueError, secrets.KeyringUnavailable) as exc:
+        except (ValueError, secrets.KeyringUnavailable, SourceError) as exc:
             print(str(exc), file=sys.stderr)
             return 1
         except RuntimeError as exc:
@@ -195,7 +220,8 @@ def _dispatch(conn, args) -> int:
             return 1
         print("configured {} as source #{} ({!r})".format(
             args.vendor, source_id, name))
-        print("run 'python -m ticker.ingest.sync' to start pulling")
+        print("start Ticker (`ticker`) to begin syncing; if it is already "
+              "running it picks this up within a minute")
         return 0
 
     if remove(conn, args.vendor, name):

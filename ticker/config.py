@@ -141,9 +141,32 @@ API_TOKEN = os.environ.get("TICKER_API_TOKEN") or None
 API_ALLOW_REMOTE = (os.environ.get("TICKER_API_ALLOW_REMOTE", "")
                     .strip().lower() in {"1", "true", "yes", "on"})
 
+# Extra names a token-less loopback server answers to. Without a token the
+# Host header has to name loopback -- that is the DNS-rebinding defence --
+# which also turns away a container reaching this machine by name, such as
+# Open WebUI in Docker asking for host.docker.internal. List such names
+# here, comma-separated.
+API_ALLOWED_HOSTS = frozenset(
+    name.strip().lower()
+    for name in os.environ.get("TICKER_API_ALLOWED_HOSTS", "").split(",")
+    if name.strip())
+
 # Most observations one /api/ingest call may carry. An agent draining a long
 # spool sends many batches rather than one enormous body.
 API_MAX_BATCH = int(os.environ.get("TICKER_API_MAX_BATCH", "5000"))
+
+
+# -- the Ask box ------------------------------------------------------------
+
+# The model server and model are chosen on the page (see ticker.app.settings)
+# unless TICKER_LLM_URL / TICKER_LLM_MODEL pin them. These tune the loop.
+
+# Context window asked of Ollama per request. Its own default is too small
+# for tool use; bigger costs memory on the machine running the model.
+LLM_CONTEXT = int(os.environ.get("TICKER_LLM_CONTEXT", "8192"))
+
+# How long one model reply may take. Generous: a 14B model on a CPU is slow.
+LLM_TIMEOUT_SEC = float(os.environ.get("TICKER_LLM_TIMEOUT_SEC", "300"))
 
 
 # -- agent ---------------------------------------------------------------

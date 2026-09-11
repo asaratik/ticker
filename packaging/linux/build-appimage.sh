@@ -81,8 +81,8 @@ export APPDIR="${APPDIR:-$HERE}"
 export PATH="$APPDIR/usr/bin:$PATH"
 
 # cd into the program directory: PyInstaller's onedir layout resolves
-# _internal relative to the executable, and some Tk data lookups are
-# relative to the working directory.
+# _internal relative to the executable, and any lookup that is relative
+# resolves from the working directory.
 cd "$APPDIR/usr/bin"
 exec "$APPDIR/usr/bin/Ticker" "$@"
 APPRUN

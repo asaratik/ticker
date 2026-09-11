@@ -94,9 +94,9 @@ def open_readonly(path: Path) -> Tuple[sqlite3.Connection, _Clock]:
     path = Path(path)
     if not path.exists():
         raise DatabaseUnavailable(
-            "No Ticker database at {} yet. Connect a source first -- run the "
-            "Ticker app, `ticker-setup add oura`, or `ticker-import` -- or "
-            "point ticker-mcp at another file with --db.".format(path))
+            "No Ticker database at {} yet. Start Ticker (`ticker`) and "
+            "connect a source on its page, or point `ticker mcp` at another "
+            "file with --db.".format(path))
     try:
         conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True)
     except sqlite3.Error as exc:
@@ -111,13 +111,12 @@ def open_readonly(path: Path) -> Tuple[sqlite3.Connection, _Clock]:
         raise DatabaseUnavailable("cannot read {}: {}".format(path, exc))
     if version < migrate.LATEST_VERSION:
         conn.close()
-        # Upgrading is a write, and this process doesn't make those. Any
-        # other Ticker command migrates on start, with its backup and checks.
+        # Upgrading is a write, and this connection doesn't make those.
+        # Ticker itself migrates on start, with its backup and checks.
         raise DatabaseUnavailable(
             "The database at {} is at schema version {} and needs upgrading "
-            "to {}. Run the Ticker app or any ticker command once (for "
-            "example `ticker-setup list`); it migrates in place after taking "
-            "a backup.".format(path, version, migrate.LATEST_VERSION))
+            "to {}. Start Ticker once (`ticker`); it migrates in place after "
+            "taking a backup.".format(path, version, migrate.LATEST_VERSION))
     clock = _Clock()
     conn.set_progress_handler(clock.check, PROGRESS_STEPS)
     # Last: from here on the connection can only read.

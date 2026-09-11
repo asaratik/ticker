@@ -1,5 +1,5 @@
 """
-Tests for the MCP transports: stdio (ticker-mcp) and HTTP (/mcp).
+Tests for the MCP transports: stdio and HTTP (/mcp).
 
 The stdio loop is tested over in-memory streams, and then once for real: a
 `python -m ticker.mcp.server` subprocess on real pipes, which is exactly
@@ -94,7 +94,7 @@ def test_blank_lines_and_crlf_are_tolerated(db):
     assert run_serve(db, data) == [{"jsonrpc": "2.0", "id": 9, "result": {}}]
 
 
-# -- ticker-mcp as a real process ------------------------------------------------
+# -- the stdio server as a real process ----------------------------------------------
 
 def run_process(db_path, data):
     env = dict(os.environ, PYTHONPATH=str(ROOT))

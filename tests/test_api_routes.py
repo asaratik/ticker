@@ -421,7 +421,7 @@ def test_sync_says_so_when_nothing_can_act_on_it(api, pull_source):
     # polling for fresh data that is never going to arrive.
     status, payload = api.handle("POST", "/api/sync/{}".format(pull_source), {})
     assert status == 503
-    assert "ticker-sync" in payload["error"]
+    assert "ticker sync" in payload["error"]
 
 
 def test_sync_rejects_a_source_that_is_already_running(db, writer, pull_source):

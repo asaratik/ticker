@@ -174,6 +174,48 @@ class PullState:
         return cls(source_id, metrics, watermarks, cursors)
 
 
+class Waker:
+    """Lets someone else cut a pull source's wait between cycles short.
+
+    The runtime gives one to each source so that "Sync now" -- a button, or
+    POST /api/sync/{id} -- starts a cycle at once instead of up to fifteen
+    minutes later. It only ever shortens the *idle* wait. A rate-limit
+    back-off still sleeps in full: waking a source the vendor has just told
+    to slow down would earn another 429 and nothing else.
+
+    Make it on the loop that runs the source; on Python 3.9 an asyncio.Event
+    belongs to whichever loop was current when it was created.
+    """
+
+    def __init__(self):
+        self._event = asyncio.Event()
+        self.idle = False
+
+    def wake(self) -> bool:
+        """Start the next cycle now. False while a cycle is running -- the
+        sync being asked for is already happening. Loop thread only; from
+        anywhere else, go through call_soon_threadsafe or
+        run_coroutine_threadsafe."""
+        if not self.idle:
+            return False
+        self._event.set()
+        return True
+
+    async def wait(self, seconds: float, sleep=asyncio.sleep) -> None:
+        """Idle for `seconds`, or until woken, whichever is first."""
+        self._event.clear()
+        self.idle = True
+        sleeper = asyncio.ensure_future(sleep(seconds))
+        waiter = asyncio.ensure_future(self._event.wait())
+        try:
+            await asyncio.wait({sleeper, waiter},
+                               return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            self.idle = False
+            sleeper.cancel()
+            waiter.cancel()
+
+
 async def run_pull_source(source, normalizer, store, state: PullState, *,
                           now: Callable[[], datetime],
                           interval: float = PULL_INTERVAL_SEC,
@@ -182,12 +224,15 @@ async def run_pull_source(source, normalizer, store, state: PullState, *,
                           horizon: timedelta = BACKFILL_HORIZON,
                           on_error: Optional[Callable[[str], None]] = None,
                           sleep=asyncio.sleep,
-                          max_cycles: Optional[int] = None) -> None:
+                          max_cycles: Optional[int] = None,
+                          wake: Optional[Waker] = None) -> None:
     """Sync one pull source until cancelled.
 
     Each cycle syncs every metric's live window, then does at most one
     backfill chunk. That ordering makes backfill lower priority than live
     sync without needing a priority queue.
+
+    With a Waker, the wait between cycles ends early when it is woken.
     """
     cycles = 0
     while True:
@@ -205,7 +250,10 @@ async def run_pull_source(source, normalizer, store, state: PullState, *,
             _report(on_error, "{} sync failed: {}".format(source.vendor, exc))
         if max_cycles is not None and cycles >= max_cycles:
             return
-        await sleep(interval)
+        if wake is not None:
+            await wake.wait(interval, sleep)
+        else:
+            await sleep(interval)
 
 
 async def _sync_live(source, normalizer, store, state, now, overlap,

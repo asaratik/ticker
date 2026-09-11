@@ -12,8 +12,8 @@ code, not rewriting it under a new name.
 
 So the adaptation is narrow and lives here:
 
-* v1's message queue is a thread-safe queue.Queue, because a Tk app drains
-  it from the UI thread. A StreamSource yields into asyncio. The bridge is
+* v1's message queue is a thread-safe queue.Queue, because the app's live
+  monitor drains it from a plain thread. A StreamSource yields into asyncio. The bridge is
   _QueueBridge below -- it looks like the queue.Queue that HRSource expects,
   and hands each message to the consumer's event loop.
 * one v1 'sample' message becomes several observations: one heart_rate_bpm,
@@ -164,7 +164,7 @@ class BleStreamSource:
         return []
 
     def _observations(self, message: dict) -> List[Observation]:
-        # Shared with the Tk app, which drains the same protocol from its own
-        # queue -- see ticker.sources.hr_messages.
+        # Shared with the app's live monitor, which drains the same protocol
+        # from its own queue -- see ticker.sources.hr_messages.
         self._last_sample = parse_iso(message["timestamp"])
         return observations_from_sample(message)

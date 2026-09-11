@@ -32,7 +32,16 @@ datas += [
      os.path.join("ticker", "db", "migrations")),
     (os.path.join(ROOT, "ticker", "db", "schema.sql"),
      os.path.join("ticker", "db")),
+    # The app's page is served off disk the same way.
+    (os.path.join(ROOT, "ticker", "app", "static", "*"),
+     os.path.join("ticker", "app", "static")),
 ]
+
+# `ticker agent`, `sync`, `rollup` and `backfill` are reached through
+# importlib (see ticker/app/main.py), which PyInstaller's import tracing
+# cannot follow; without these the packaged app would fail on them.
+hiddenimports += ["ticker.agent.main", "ticker.ingest.sync",
+                  "ticker.db.rollup", "ticker.db.backfill"]
 
 if sys.platform == "win32":
     # bleak's Windows BLE backend uses the winrt bindings, which
@@ -43,8 +52,10 @@ if sys.platform == "win32":
     binaries += win_binaries
     hiddenimports += win_hidden
 
+# The packaged app is the runtime with no terminal: it starts, opens the page
+# in the browser, and logs beside the database (ticker.app.main.gui_main).
 a = Analysis(
-    [os.path.join(ROOT, "ticker", "ui", "app.py")],
+    [os.path.join(ROOT, "ticker", "app", "main.py")],
     pathex=[ROOT],
     binaries=binaries,
     datas=datas,

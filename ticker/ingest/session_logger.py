@@ -33,11 +33,16 @@ class SessionLogger:
     """Logs one live source's samples into the v2 database."""
 
     def __init__(self, vendor: str, db_path: Optional[Path] = None,
-                 error_queue=None, display_name: Optional[str] = None):
+                 error_queue=None, display_name: Optional[str] = None,
+                 store=None):
+        """`store` is a writer to share instead of opening one -- the
+        runtime's, so the whole process commits through one thread. A shared
+        store belongs to whoever made it and is not closed here."""
         self.vendor = vendor
         self.db_path = Path(db_path) if db_path else tconfig.DB_PATH
         self.display_name = display_name or tconfig.source_display_name(vendor)
         self._error_queue = error_queue
+        self._shared_store = store
 
         self.db = None
         self.store = None
@@ -58,7 +63,7 @@ class SessionLogger:
             self.source_id = ticker_store.ensure_source(
                 self.db, "stream", self.vendor, self.display_name)
             # Already migrated on this thread, so the writer needn't retry.
-            self.store = ticker_store.AsyncStore(
+            self.store = self._shared_store or ticker_store.AsyncStore(
                 self.db_path, error_queue=self._error_queue, migrate_first=False)
             self.normalizer = Normalizer(self.store, self.source_id)
         except Exception as exc:
@@ -150,7 +155,8 @@ class SessionLogger:
             self.normalizer.flush()
         if self.store is not None:
             self.store.rebuild_rollups()
-            self.store.close()      # commits whatever is still coalescing
+            if self._shared_store is None:
+                self.store.close()  # commits whatever is still coalescing
         if self.db is not None:
             self.db.close()
         self.store = None

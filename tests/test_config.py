@@ -1,6 +1,6 @@
 """
-config.py resolves DB_PATH/FONT_FAMILY from the environment and sys.platform
-at import time, so these tests reload the module under a patched
+config.py resolves DB_PATH from the environment and sys.platform at import
+time, so these tests reload the module under a patched
 environment rather than relying on the one import done at collection time.
 An autouse fixture reloads config fresh after every test in this file so a
 patched sys.platform/env var never leaks into a test that runs after it.
@@ -88,17 +88,3 @@ def test_http_defaults_listen_on_every_interface(monkeypatch):
     # Below the blocks Windows reserves for Hyper-V/WSL, which routinely
     # cover 8600-9100 and make a port there unbindable.
     assert reloaded.HTTP_PORT == 8476
-
-
-def test_font_family_differs_by_platform(monkeypatch):
-    monkeypatch.setattr(config.sys, "platform", "win32")
-    reloaded = importlib.reload(config)
-    assert reloaded.FONT_FAMILY == "Segoe UI"
-
-    monkeypatch.setattr(config.sys, "platform", "darwin")
-    reloaded = importlib.reload(config)
-    assert reloaded.FONT_FAMILY == "Helvetica Neue"
-
-    monkeypatch.setattr(config.sys, "platform", "linux")
-    reloaded = importlib.reload(config)
-    assert reloaded.FONT_FAMILY == "DejaVu Sans"

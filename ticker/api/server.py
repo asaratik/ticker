@@ -19,14 +19,34 @@ about this size and no change to `routes.py` at all.
 
 MCP
 ---
-/mcp serves the same read-only tools as `ticker-mcp`, over MCP's Streamable
+/mcp serves the same read-only tools as `ticker mcp`, over MCP's Streamable
 HTTP transport, for an agent that can't launch a process on this machine --
 the homelab deployment, where the database lives on another box. Replies
 are plain JSON responses to POSTs; there is no event stream to GET, which
 the transport allows. The token check is the same as everywhere else, and
 also accepts `Authorization: Bearer`, which is what MCP clients know how to
-send. Requests carrying a foreign Origin are refused, as the MCP spec asks,
-so a web page can't reach the tools by rebinding a hostname to 127.0.0.1.
+send.
+
+The page
+--------
+When the app runs this server it also serves its page: / and /static/* (the
+page itself, public) and /ui/* (its data and actions, behind the token like
+everything else). See ticker.app.web.
+
+Browsers
+--------
+A server on 127.0.0.1 with a page that stores tokens and can stop the app is
+worth attacking from any web page its user happens to visit, so every route
+but /health gets two checks. On a loopback-bound server with no token, the
+Host header must be a loopback name (or one listed in
+TICKER_API_ALLOWED_HOSTS, such as host.docker.internal for a container): a
+page that rebinds its own hostname to 127.0.0.1 still sends its own name,
+and this is what defeats DNS rebinding, which the browser would otherwise
+treat as same-origin. With a token the check is unnecessary -- the rebound
+page doesn't have it -- and is skipped. And a request carrying a
+foreign Origin is refused -- what the MCP spec asks of /mcp, and what stops
+cross-site form posts everywhere else. Agents, curl and Grafana send no
+Origin and a loopback Host, so neither check touches them.
 
 Binding
 -------
@@ -136,10 +156,18 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, {"ok": True, "app": "Ticker"}, head_only)
             return
 
-        is_mcp = parsed.path.rstrip("/") == MCP_PATH
-        if is_mcp and not self._origin_allowed():
-            self._send(403, {"ok": False,
-                             "error": "cross-origin requests to /mcp are refused"})
+        route = parsed.path.rstrip("/") or "/"
+        refusal = self._refusal()
+        if refusal:
+            self._send(403, {"ok": False, "error": refusal}, head_only)
+            return
+
+        ui = getattr(self.server, "ui", None)
+        if ui is not None and ui.serves_page(route):
+            # The page itself skips the token: a remote page has to load
+            # before it can be told the token, and it is nothing but code.
+            # Everything it then asks for goes through the check below.
+            self._send_raw(*ui.handle(method, parsed.path), head_only=head_only)
             return
 
         if not self._authorized(params):
@@ -157,15 +185,28 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             body = self._read_body(length)
 
-        if is_mcp:
-            self._serve_mcp(method, body, head_only)
+        if route == MCP_PATH:
+            self._serve_mcp(method, body, head_only, params)
+            return
+        if ui is not None and route.startswith("/ui/"):
+            self._send_raw(*ui.handle(method, parsed.path, body,
+                                      self.headers.get("Content-Type") or ""),
+                           head_only=head_only)
             return
 
         status, payload = self.server.api.handle(method, parsed.path, params, body)
         self._send(status, payload, head_only)
 
-    def _serve_mcp(self, method: str, body: bytes, head_only: bool):
-        mcp = getattr(self.server, "mcp", None)
+    def _serve_mcp(self, method: str, body: bytes, head_only: bool,
+                   params: Optional[dict] = None):
+        # ?profile=compact: the smaller tool set, for local models.
+        profile = (params or {}).get("profile") or "full"
+        if profile not in ("full", "compact"):
+            self._send(400, {"ok": False, "error": "profile is full or compact"},
+                       head_only)
+            return
+        mcp = getattr(self.server,
+                      "mcp_compact" if profile == "compact" else "mcp", None)
         if mcp is None:
             self._send(404, {"ok": False, "error": "MCP is not enabled here"},
                        head_only)
@@ -192,14 +233,28 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             self._send(200, reply)
 
-    def _origin_allowed(self) -> bool:
-        """No Origin means not a browser -- agents and curl send none. A
-        browser's Origin must be this machine, or a page elsewhere could
-        reach the tools through DNS rebinding."""
+    def _refusal(self) -> Optional[str]:
+        """Why a browser-borne request can't be served, or None. See
+        'Browsers' in the module docstring."""
+        host = self.headers.get("Host") or ""
+        # Only without a token: with one, a rebinding page is stopped by not
+        # having it, and the Host check would only turn away honest clients
+        # that reach this machine by another name.
+        if (host and getattr(self.server, "loopback_only", False)
+                and not self.server.token
+                and _hostname(host) not in getattr(self.server, "allowed_hosts",
+                                                   LOOPBACK)):
+            return ("this server only answers to 127.0.0.1 or localhost; "
+                    "add other names to TICKER_API_ALLOWED_HOSTS")
         origin = self.headers.get("Origin")
-        if not origin:
-            return True
-        return (urlparse(origin).hostname or "") in LOOPBACK
+        if origin:
+            parsed = urlparse(origin)
+            # 'null' -- a sandboxed frame, a file:// page -- parses to no
+            # hostname and no netloc, so it is refused along with the rest.
+            if (parsed.hostname or "") not in LOOPBACK and (
+                    not parsed.netloc or parsed.netloc != host):
+                return "cross-origin requests are refused"
+        return None
 
     def _authorized(self, params: dict) -> bool:
         expected = self.server.token
@@ -247,15 +302,20 @@ class _Handler(BaseHTTPRequestHandler):
     def _send(self, code: int, payload: Optional[dict], head_only: bool = False,
               headers: Optional[dict] = None):
         """Answer with `payload` as JSON, or with no body when it is None."""
-        self._drain_request_body()
         body = b"" if payload is None else json.dumps(payload, default=str).encode("utf-8")
+        sent = dict(headers or {})
+        if payload is not None:
+            sent.setdefault("Content-Type", "application/json")
+        self._send_raw(code, sent, body, head_only)
+
+    def _send_raw(self, code: int, headers: dict, body: bytes,
+                  head_only: bool = False):
+        self._drain_request_body()
         try:
             self.send_response(code)
-            if payload is not None:
-                self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            for name, value in (headers or {}).items():
+            for name, value in headers.items():
                 self.send_header(name, value)
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             if body and not head_only:
                 self.wfile.write(body)
@@ -268,17 +328,27 @@ class _Handler(BaseHTTPRequestHandler):
 class ApiServer:
     """The read API on a background thread.
 
-    Owned by whoever starts it -- the standalone `ticker-server` process, or
-    the app itself in the single-machine deployment, which is why start()
-    and stop() are separate from the module's main().
+    Owned by whoever starts it -- the app's runtime, or this module's own
+    main() for an API with nothing else behind it -- which is why start()
+    and stop() are separate from main().
     """
 
     def __init__(self, api: Api, host: Optional[str] = None,
                  port: Optional[int] = None, token: Optional[str] = None,
-                 allow_remote: Optional[bool] = None, mcp=None):
+                 allow_remote: Optional[bool] = None, mcp=None, ui=None,
+                 allowed_hosts=None, mcp_compact=None):
         self.api = api
-        # An McpServer to answer /mcp, or None to leave it unrouted.
+        # Names besides loopback a token-less server answers to; see
+        # TICKER_API_ALLOWED_HOSTS.
+        self.allowed_hosts = frozenset(
+            name.lower() for name in (tconfig.API_ALLOWED_HOSTS
+                                      if allowed_hosts is None else allowed_hosts))
+        # An McpServer to answer /mcp, and the app's page (ticker.app.web.Ui)
+        # to answer /, /static and /ui -- each None to leave it unrouted.
         self.mcp = mcp
+        # The same tools in their compact profile, at /mcp?profile=compact.
+        self.mcp_compact = mcp_compact
+        self.ui = ui
         self.host = tconfig.API_HOST if host is None else host
         self.port = tconfig.API_PORT if port is None else port
         self.token = tconfig.API_TOKEN if token is None else token
@@ -298,7 +368,11 @@ class ApiServer:
         httpd.daemon_threads = True
         httpd.api = self.api
         httpd.mcp = self.mcp
+        httpd.mcp_compact = self.mcp_compact
+        httpd.ui = self.ui
         httpd.token = self.token
+        httpd.loopback_only = self.host in LOOPBACK
+        httpd.allowed_hosts = LOOPBACK | self.allowed_hosts
         self._httpd = httpd
         self.port = httpd.server_address[1]
         # serve_forever polls for the shutdown flag, and stop() blocks until
@@ -350,14 +424,14 @@ def thread_local_reader(db_path: Path):
 
 
 def build(db_path: Optional[Path] = None, writer=None, on_sync=None,
-          mcp=None, **kwargs) -> ApiServer:
+          mcp=None, ui=None, mcp_compact=None, **kwargs) -> ApiServer:
     """An ApiServer over a database, with its own writer unless given one.
 
     The single-machine deployment passes the app's existing AsyncStore so
     there is one writer thread for the process, which is what keeps the
     live stream and the API from interleaving commits.
 
-    /mcp gets the same read-only tools as ticker-mcp unless `mcp` says
+    /mcp gets the same read-only tools as `ticker mcp` unless `mcp` says
     otherwise. They open their own read-only connections rather than
     borrowing the API's readers, which can write.
     """
@@ -367,8 +441,16 @@ def build(db_path: Optional[Path] = None, writer=None, on_sync=None,
         writer = store.AsyncStore(path, migrate_first=False)
     if mcp is None:
         mcp, _db = build_mcp(path)
+    if mcp_compact is None:
+        mcp_compact, _db = build_mcp(path, profile="compact")
     api = Api(thread_local_reader(path), writer, on_sync=on_sync)
-    return ApiServer(api, mcp=mcp, **kwargs)
+    return ApiServer(api, mcp=mcp, mcp_compact=mcp_compact, ui=ui, **kwargs)
+
+
+def _hostname(host_header: str) -> str:
+    """The name in a Host header, without its port: '127.0.0.1:8477' and
+    '[::1]:8477' become '127.0.0.1' and '::1'."""
+    return urlparse("//" + host_header).hostname or ""
 
 
 def _bearer(header: Optional[str]) -> Optional[str]:

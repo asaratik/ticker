@@ -31,33 +31,27 @@ dependencies = [
 # Pull-source tokens live in the OS keyring. Optional so
 # that a BLE-only install doesn't drag in a keyring backend it never uses.
 cloud = ["keyring>=24.0"]
+# Garmin Connect sign-in. The community library it rests on needs Python
+# 3.12+, so on older interpreters this installs nothing and the page says
+# why; Garmin's data export and .fit files import on any version.
+garmin = ["keyring>=24.0",
+          "garminconnect; python_version >= '3.12'",
+          "curl_cffi; python_version >= '3.12'"]
 dev = ["pytest>=7.0", "pyinstaller>=6.0", "pyflakes>=3.0"]
 
 [project.urls]
 Homepage = "https://github.com/ashokaratikatla/ticker"
 Issues = "https://github.com/ashokaratikatla/ticker/issues"
 
-# gui-scripts, not scripts: on Windows this produces a launcher that doesn't
-# open a console window behind the Tk window.
-[project.gui-scripts]
-ticker = "ticker.ui.app:main"
-
+# One command. `ticker` starts the app; `ticker mcp` is what an agent
+# launches; the rest are subcommands of the same thing (see ticker/app/main.py).
 [project.scripts]
-ticker-sync = "ticker.ingest.sync:main"
-# File exports rather than APIs: Apple Health has no server side.
-ticker-import = "ticker.ingest.importer:main"
-# The two halves of the agent/server split. Both are optional: the app writes
-# to the database directly in the single-machine deployment, and neither of
-# these has to be running for it to work.
-ticker-server = "ticker.api.server:main"
-ticker-agent = "ticker.agent.main:main"
-ticker-setup = "ticker.auth.setup:main"
-ticker-rollup = "ticker.db.rollup:main"
-ticker-backfill = "ticker.db.backfill:main"
-# What an agent (Claude Code, Codex, Claude Desktop) launches: MCP over stdio,
-# read-only against the same database. ticker-server serves the same tools
-# over HTTP at /mcp for agents on other machines.
-ticker-mcp = "ticker.mcp.server:main"
+ticker = "ticker.app.main:main"
+
+# The same app from a launcher with no terminal behind it -- a Start menu or
+# login item. gui-scripts, so Windows opens no console window for it.
+[project.gui-scripts]
+ticker-app = "ticker.app.main:gui_main"
 
 [tool.setuptools]
 # The v1 modules are still top-level while they migrate into the package,
@@ -66,12 +60,12 @@ packages = [
     "ticker",
     "ticker.agent",
     "ticker.api",
+    "ticker.app",
     "ticker.auth",
     "ticker.db",
     "ticker.ingest",
     "ticker.mcp",
     "ticker.sources",
-    "ticker.ui",
 ]
 py-modules = [
     "config",
@@ -84,6 +78,7 @@ py-modules = [
 [tool.setuptools.package-data]
 # Read off disk at runtime, so they have to be installed alongside the code.
 "ticker.db" = ["schema.sql", "migrations/*.sql"]
+"ticker.app" = ["static/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

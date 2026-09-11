@@ -1,13 +1,13 @@
 """
 Run the pull sources.
 
-    python -m ticker.ingest.sync            # keep syncing until interrupted
-    python -m ticker.ingest.sync --once     # one cycle, then stop
+    ticker sync            # keep syncing until interrupted
+    ticker sync --once     # one cycle, then stop
 
-One asyncio loop owns every configured pull source, each on
-its own task. The BLE stream still runs inside the app; this is the half
-that talks to vendor APIs, and it is deliberately a separate process so a
-cloud outage can't affect the thing recording your heart rate.
+One asyncio loop owns every configured pull source, each on its own task.
+Ticker itself does the same on a thread of its own (ticker.app.pulls);
+this is for syncing without the app -- from cron, or on a box that should
+only ever sync.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ from ticker.ingest import scheduler
 from ticker.ingest.normalizer import Normalizer
 from ticker.model import now_utc
 from ticker.sources.fitbit import FitbitSource
+from ticker.sources.garmin import GarminSource
 from ticker.sources.oura import OuraSource
 
 log = logging.getLogger("ticker.sync")
@@ -41,6 +42,9 @@ BUILDERS = {
     "fitbit": lambda **kwargs: FitbitSource(
         client_id=tconfig.FITBIT_CLIENT_ID,
         profile_tz=tconfig.FITBIT_PROFILE_TZ, **kwargs),
+    # Needs the optional garminconnect library; without it the source
+    # reports why on every fetch instead of taking anything else down.
+    "garmin": lambda **kwargs: GarminSource(**kwargs),
 }
 
 
@@ -51,19 +55,28 @@ def build_sources(conn, writer) -> List[tuple]:
         "SELECT id, vendor, display_name, auth_ref FROM sources "
         "WHERE kind = 'pull' AND enabled = 1 ORDER BY id").fetchall()
     for source_id, vendor, display_name, auth_ref in rows:
-        builder = BUILDERS.get(vendor)
-        if builder is None:
-            log.warning("no connector for vendor %r (source #%s)", vendor, source_id)
-            continue
-        connector = builder(
-            auth_ref=auth_ref or secrets.auth_ref(vendor, display_name),
-            # The connector never touches SQLite; these hand what it found to
-            # the writer, which does.
-            on_payload=_payload_sink(writer, source_id),
-            on_session=_session_sink(writer, source_id),
-        )
-        built.append((source_id, connector))
+        connector = build_source(writer, source_id, vendor, display_name,
+                                 auth_ref)
+        if connector is not None:
+            built.append((source_id, connector))
     return built
+
+
+def build_source(writer, source_id: int, vendor: str, display_name: str,
+                 auth_ref=None, builders=None):
+    """The connector for one sources row, wired to `writer`; None for a
+    vendor this version has no connector for."""
+    builder = (BUILDERS if builders is None else builders).get(vendor)
+    if builder is None:
+        log.warning("no connector for vendor %r (source #%s)", vendor, source_id)
+        return None
+    return builder(
+        auth_ref=auth_ref or secrets.auth_ref(vendor, display_name),
+        # The connector never touches SQLite; these hand what it found to
+        # the writer, which does.
+        on_payload=_payload_sink(writer, source_id),
+        on_session=_session_sink(writer, source_id),
+    )
 
 
 def _payload_sink(writer, source_id):
@@ -89,8 +102,8 @@ def _session_sink(writer, source_id):
 async def run(conn, writer, sources, *, once: bool = False,
               interval: float = scheduler.PULL_INTERVAL_SEC) -> None:
     if not sources:
-        log.warning("no pull sources configured; "
-                    "run 'python -m ticker.auth.setup add oura' first")
+        log.warning("no cloud accounts connected; connect one on Ticker's "
+                    "page first")
         return
 
     tasks = []

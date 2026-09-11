@@ -50,7 +50,8 @@ def write(conn, source_id, metric, samples, zone=UTC):
 def test_seeded_metrics_are_listed(conn):
     names = {m["name"] for m in queries.list_metrics(conn)}
     assert "heart_rate_bpm" in names
-    assert len(names) == 12
+    assert len(names) == 15
+    assert {"resting_heart_rate_bpm", "stress_level", "body_battery"} <= names
 
 
 def test_metric_id_raises_for_an_unknown_name(conn):

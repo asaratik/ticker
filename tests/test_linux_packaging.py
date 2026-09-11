@@ -71,7 +71,7 @@ def test_it_declares_itself_an_application(desktop):
 
 
 def test_it_is_not_a_terminal_program(desktop):
-    """A Tk app launched with Terminal=true opens a stray console window."""
+    """The app runs with no terminal; Terminal=true would open a stray one."""
     assert desktop["Terminal"] == "false"
 
 

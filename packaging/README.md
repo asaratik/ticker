@@ -211,20 +211,22 @@ pipx install ticker          # from PyPI, once published
 pipx install .               # from a checkout
 ```
 
-Entry points: `ticker` (the app), `ticker-sync`, `ticker-import`, `ticker-setup`,
-`ticker-rollup`, `ticker-backfill`, `ticker-server`, `ticker-agent`. This
-sidesteps code signing entirely, which makes it the path of least resistance
-for anyone technical.
+Entry points: `ticker` -- the app, and every subcommand (`ticker mcp`,
+`ticker status`, `ticker import`, `ticker agent`, ...) -- and `ticker-app`,
+the same app launched without a console window. This sidesteps code
+signing entirely, which makes it the path of least resistance for anyone
+technical.
 
-**The packaged builds ship the app and nothing else.** PyInstaller follows
-imports from `ticker/ui/app.py`, and the two halves of the agent/server split are
-separate entry points that nothing in the GUI imports — so the installer,
-the `.dmg` and the tarball all contain `ticker` alone. That is the right
-default: the split is opt-in, and the single-machine deployment the packaged
-build serves needs neither half.
+**The packaged builds are the whole app.** PyInstaller follows imports from
+`ticker/app/main.py`, the runtime behind `ticker`, so cloud sync, the live
+source, imports, the read API, MCP and the page all ship together. Opening
+the packaged app starts Ticker and opens its page in the browser; it is a
+windowed build with no console, so it logs to `ticker.log` beside the
+database. The subcommands reach their modules through a dynamic import that
+PyInstaller can't see, which is why the spec lists them as hidden imports.
 
-Anyone running agent and server on separate machines installs from source or
-`pipx` today. Shipping them in the bundle would mean additional `EXE`
-targets sharing one `COLLECT`, which is worth doing when someone actually
-wants a signed agent on a machine that cannot install Python, and not
-before.
+One thing a windowed build can't do well is `ticker mcp`: an agent launches
+that over stdin and stdout, which a program with no console does not
+reliably have. Agents reach the packaged app over HTTP instead --
+`claude mcp add --transport http ticker http://127.0.0.1:8477/mcp` -- which
+the page offers ready to copy, or use a `pipx` install's `ticker mcp`.

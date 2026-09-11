@@ -40,13 +40,6 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Tk (Linux)
-        if: runner.os == 'Linux'
-        # The runner image's Python links Tk dynamically, so importing
-        # tkinter (ticker.ui.app does, at import time) needs the Tcl/Tk runtime
-        # present. Windows and macOS ship it with Python.
-        run: sudo apt-get update && sudo apt-get install -y python3-tk
-
       - name: Build (install deps, run tests, package app)
         run: python build.py
 

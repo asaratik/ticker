@@ -1,19 +1,17 @@
 """
-Ticker's MCP server over stdio -- the process an agent launches.
+Ticker's MCP server over stdio, reading the database directly.
 
-    ticker-mcp
-    ticker-mcp --db D:/elsewhere/hrm_data.sqlite3
+    python -m ticker.mcp.server --db D:/elsewhere/hrm_data.sqlite3
 
-Claude Code:     claude mcp add ticker -- ticker-mcp
-Codex:           ~/.codex/config.toml
-                     [mcp_servers.ticker]
-                     command = "ticker-mcp"
-Claude Desktop:  "mcpServers": {"ticker": {"command": "ticker-mcp"}}
+Agents launch `ticker mcp`, not this: it bridges into the running app's
+/mcp, and falls back to exactly this -- the same tools, read-only against
+the file -- when nothing is running. It stays runnable on its own for that
+fallback's sake and for testing the stdio wire.
 
-The agent starts this and speaks newline-delimited JSON-RPC over its stdin
-and stdout. It opens the database read-only and never writes, so running
-it beside the app, ticker-sync or ticker-server is safe: under WAL it is
-one more reader, and it sees their writes as they commit.
+It speaks newline-delimited JSON-RPC over stdin and stdout, opens the
+database read-only and never writes, so running it beside the app is safe:
+under WAL it is one more reader, and it sees the app's writes as they
+commit.
 
 stdout belongs to the protocol. One stray print anywhere in the process
 would corrupt the stream, so main() takes stdout's buffer for itself and
@@ -33,17 +31,20 @@ from ticker import config as tconfig
 from ticker.mcp import protocol
 from ticker.mcp.protocol import McpServer
 from ticker.mcp.readonly import ReadOnlyDatabase
-from ticker.mcp.tools import INSTRUCTIONS, Tools
+from ticker.mcp.tools import COMPACT_INSTRUCTIONS, INSTRUCTIONS, Tools
 
 log = logging.getLogger("ticker.mcp")
 
 
-def build(db_path: Optional[Path] = None, zone=None
+def build(db_path: Optional[Path] = None, zone=None, profile: str = "full"
           ) -> Tuple[McpServer, ReadOnlyDatabase]:
     """The protocol over the tools over a read-only database. Shared by this
-    transport and ticker-server's /mcp, so the two can't drift apart."""
+    transport, `ticker mcp`'s fallback and the app's /mcp, so they can't
+    drift apart. profile="compact" is the smaller tool set for local models."""
     db = ReadOnlyDatabase(db_path)
-    return McpServer(Tools(db, zone=zone), instructions=INSTRUCTIONS), db
+    instructions = COMPACT_INSTRUCTIONS if profile == "compact" else INSTRUCTIONS
+    return McpServer(Tools(db, zone=zone, profile=profile),
+                     instructions=instructions), db
 
 
 def serve(server: McpServer, stdin: Iterable[bytes], stdout: BinaryIO) -> None:
@@ -74,6 +75,8 @@ def main(argv=None) -> int:
                     "such as Claude Code, Codex and Claude Desktop.")
     parser.add_argument("--db", type=Path, default=None,
                         help="database file (default: {})".format(tconfig.DB_PATH))
+    parser.add_argument("--compact", action="store_true",
+                        help="the smaller tool set, for local models")
     parser.add_argument("--verbose", action="store_true")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
 
@@ -84,11 +87,11 @@ def main(argv=None) -> int:
     protocol_out = sys.stdout.buffer
     sys.stdout = sys.stderr
 
-    server, db = build(args.db)
+    server, db = build(args.db, profile="compact" if args.compact else "full")
     if sys.stdin.isatty():
-        log.warning("ticker-mcp speaks MCP over stdin/stdout and is meant to "
-                    "be launched by an agent, for example: "
-                    "claude mcp add ticker -- ticker-mcp")
+        log.warning("this speaks MCP over stdin/stdout for an agent; agents "
+                    "should launch `ticker mcp`: "
+                    "claude mcp add ticker -- ticker mcp")
     log.info("serving %s (read-only)", db.path)
     try:
         serve(server, sys.stdin.buffer, protocol_out)

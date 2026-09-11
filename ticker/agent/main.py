@@ -1,9 +1,9 @@
 """
 The BLE agent.
 
-    python -m ticker.agent.main                          # post to loopback
-    python -m ticker.agent.main --server http://nas:8477 --token ...
-    python -m ticker.agent.main --status                 # what's spooled
+    ticker agent                                    # post to loopback
+    ticker agent --server http://nas:8477 --token ...
+    ticker agent --status                           # what's spooled
 
 Runs on the machine the strap is near, and nothing else: it scans, connects,
 reads heart rate and RR intervals, and posts them to a Ticker server. No

@@ -129,7 +129,7 @@ def test_a_named_import_gets_its_own_source(db, tmp_path):
 def test_an_unknown_vendor_is_refused(db, tmp_path):
     path, conn, writer = db
     with pytest.raises(PermanentError):
-        importer.run_import(conn, writer, "garmin", tmp_path / "x.xml")
+        importer.run_import(conn, writer, "whoop", tmp_path / "x.xml")
 
 
 def test_the_progress_hook_reaches_the_connector(db, tmp_path, monkeypatch):

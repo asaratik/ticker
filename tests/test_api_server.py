@@ -303,3 +303,77 @@ def test_readers_are_per_thread(tmp_path):
         thread.join()
     assert len(set(seen)) == 3
     assert id(reader()) == id(reader())         # and reused within a thread
+
+
+# -- browsers --------------------------------------------------------------
+
+def get_with(url, headers):
+    """get(), with headers a browser would add."""
+    request = urllib.request.Request(url)
+    for name, value in headers.items():
+        request.add_header(name, value)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read() or b"{}")
+    except urllib.error.HTTPError as exc:
+        return exc.code, json.loads(exc.read() or b"{}")
+
+
+def test_a_foreign_host_is_refused_on_a_loopback_server(serving):
+    # DNS rebinding: evil.example re-resolved to 127.0.0.1 is same-origin to
+    # the browser, but its requests still carry its own name.
+    server = serving()
+    status, payload = get_with(server.url + "/api/metrics",
+                               {"Host": "evil.example:{}".format(server.port)})
+    assert status == 403
+    assert "127.0.0.1" in payload["error"]
+
+
+@pytest.mark.parametrize("host", ["localhost", "127.0.0.1", "[::1]"])
+def test_loopback_hosts_are_answered(serving, host):
+    server = serving()
+    status, _ = get_with(server.url + "/api/metrics",
+                         {"Host": "{}:{}".format(host, server.port)})
+    assert status == 200
+
+
+def test_an_allowed_host_is_answered(serving):
+    # Open WebUI in Docker reaches this machine as host.docker.internal.
+    server = serving(allowed_hosts={"host.docker.internal"})
+    status, _ = get_with(server.url + "/api/metrics",
+                         {"Host": "host.docker.internal:{}".format(server.port)})
+    assert status == 200
+
+
+def test_allowed_hosts_default_to_the_configured_ones(serving, monkeypatch):
+    from ticker import config as tconfig
+    monkeypatch.setattr(tconfig, "API_ALLOWED_HOSTS", frozenset({"box.lan"}))
+    server = serving()
+    assert get_with(server.url + "/api/metrics", {"Host": "box.lan"})[0] == 200
+    assert get_with(server.url + "/api/metrics", {"Host": "evil.example"})[0] == 403
+
+
+def test_with_a_token_the_host_is_not_checked(serving):
+    # A rebound page can't supply the token, so the token is the defence.
+    server = serving(token="secret")
+    status, _ = get_with(server.url + "/api/metrics",
+                         {"Host": "host.docker.internal", "X-Ticker-Token": "secret"})
+    assert status == 200
+
+
+def test_health_answers_whatever_the_host(serving):
+    server = serving()
+    assert get_with(server.url + "/health", {"Host": "evil.example"})[0] == 200
+
+
+@pytest.mark.parametrize("origin", ["http://evil.example", "null"])
+def test_a_foreign_origin_is_refused_on_every_route(serving, origin):
+    server = serving()
+    status, payload = get_with(server.url + "/api/metrics", {"Origin": origin})
+    assert status == 403
+    assert "cross-origin" in payload["error"]
+
+
+def test_a_same_origin_request_is_answered(serving):
+    server = serving()
+    assert get_with(server.url + "/api/metrics", {"Origin": server.url})[0] == 200

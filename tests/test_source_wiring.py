@@ -71,8 +71,9 @@ def test_fitbit_is_registered_in_both():
 
 
 def test_each_vendor_declares_a_known_auth_style():
+    # 'password' is Garmin's: signed in with once, and never stored.
     for vendor, (_kind, _name, style) in setup.VENDORS.items():
-        assert style in {"token", "oauth"}, vendor
+        assert style in {"token", "oauth", "password"}, vendor
 
 
 def test_the_builders_produce_pull_sources():

@@ -73,28 +73,5 @@ HTTP_TOKEN = os.environ.get("HRM_HTTP_TOKEN") or None
 # How long without a reading before the UI stops calling the watch connected.
 HTTP_SAMPLE_TIMEOUT_SEC = float(os.environ.get("HRM_HTTP_TIMEOUT_SEC", "15"))
 
-POLL_INTERVAL_MS = 200
+# How much history the page's live chart shows.
 GRAPH_WINDOW_SEC = int(os.environ.get("HRM_GRAPH_WINDOW_SEC", str(5 * 60)))
-GRAPH_WIDTH = 480
-GRAPH_HEIGHT = 150
-
-# "Segoe UI" only exists on Windows; Tk silently substitutes something else
-# if asked for a font that isn't installed, but picking a font that's
-# actually native on each OS looks a lot better than leaving it to chance.
-if sys.platform == "win32":
-    FONT_FAMILY = "Segoe UI"
-elif sys.platform == "darwin":
-    FONT_FAMILY = "Helvetica Neue"
-else:
-    FONT_FAMILY = "DejaVu Sans"
-
-# Dark theme
-BG = "#1e1e1e"
-PANEL_BG = "#2a2a2a"
-TEXT = "#f0f0f0"
-SUBTEXT = "#9a9a9a"
-ACCENT = "#4fc3f7"
-GOOD = "#66bb6a"
-WARN = "#ffb74d"
-BAD = "#ef5350"
-GRAPH_LINE = "#4fc3f7"
