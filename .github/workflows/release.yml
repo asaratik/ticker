@@ -204,7 +204,7 @@ jobs:
       - name: Stage unsigned release files
         if: matrix.platform == 'linux' || (matrix.platform == 'windows' && env.WINDOWS_SIGNING_AVAILABLE != 'true') || (matrix.platform == 'macos' && env.MACOS_SIGNING_AVAILABLE != 'true')
         run: python build.py --stage-release "${{ matrix.platform }}" --version "${{ needs.resolve.outputs.version }}" --commit "${{ needs.resolve.outputs.commit }}"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-${{ matrix.platform }}
           path: dist/release-${{ matrix.platform }}/*
