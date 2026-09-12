@@ -31,7 +31,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pyinstaller>=6.0", "pyflakes>=3.0"]
+dev = ["pytest>=7.0", "pyinstaller>=6.0", "pyflakes>=3.4.0"]
 
 [project.urls]
 Homepage = "https://github.com/ashokaratikatla/ticker"
