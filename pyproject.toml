@@ -23,7 +23,7 @@ classifiers = [
 # HRM_SOURCE is 'ble' and a default that needs an extra install is a bad
 # default.
 dependencies = [
-    "bleak>=1.0",
+    "bleak>=3.0.2",
     "tzdata>=2024.1; sys_platform == 'win32'",
     "keyring>=24.0",
     "garminconnect>=0.2.38",

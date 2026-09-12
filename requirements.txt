@@ -1,4 +1,4 @@
-bleak>=1.0
+bleak>=3.0.2
 # TICKER_TZ names an IANA zone, and Windows ships no IANA tz database
 # for zoneinfo to read -- without this, rollup day bucketing silently
 # falls back to the OS zone there.
