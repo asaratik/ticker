@@ -22,6 +22,7 @@
   let state = null;
   let stopped = false;
   let hoverT = null;            // time of the reading under the pointer or focus
+  let trendMetric = null;
 
   // -- plumbing ------------------------------------------------------------
 
@@ -390,6 +391,54 @@
     }
     $("notes").replaceChildren(...(data.notes || []).map((note) =>
       h("li", { class: "note" }, badge("serious", "!", "Note"), h("span", { text: note }))));
+
+    const select = $("trend-metric");
+    const available = metrics.filter((m) => m.metric !== "sleep_stage");
+    const previous = trendMetric || select.value;
+    select.replaceChildren(...available.map((m) => h("option", {
+      value: m.metric, text: METRIC_NAMES[m.metric] || m.metric })));
+    trendMetric = available.some((m) => m.metric === previous)
+      ? previous : (available[0] && available[0].metric);
+    if (trendMetric) select.value = trendMetric;
+    else {
+      $("trend").replaceChildren(h("p", { class: "empty-state", text: "Connect or import a source to see a trend." }));
+      $("trend-summary").textContent = "";
+    }
+  }
+
+  async function renderTrend() {
+    if (!trendMetric) return;
+    const metric = trendMetric;
+    try {
+      const payload = await call("GET", "/api/observations?metric="
+        + encodeURIComponent(metric) + "&from=-30d&bucket=1d");
+      if (metric !== trendMetric) return;
+      const useSum = metric === "steps" || metric === "active_energy_kcal";
+      const points = (payload.points || []).map((p) => [p.ts, useSum ? p.sum : p.value])
+        .filter((p) => Number.isFinite(p[1]));
+      if (!points.length) {
+        $("trend").replaceChildren(h("p", { class: "empty-state", text: "No values in the last 30 days." }));
+        $("trend-summary").textContent = "";
+        return;
+      }
+      const width = 900, height = 180, pad = 24;
+      const values = points.map((p) => p[1]);
+      const low = Math.min(...values), high = Math.max(...values);
+      const spread = high - low || 1;
+      const x = (i) => pad + i * (width - pad * 2) / Math.max(1, points.length - 1);
+      const y = (v) => height - pad - (v - low) * (height - pad * 2) / spread;
+      const root = svg("svg", { class: "chart-svg", viewBox: `0 0 ${width} ${height}`,
+        role: "img", "aria-label": `${METRIC_NAMES[metric] || metric}, ${points.length} daily values` });
+      root.append(svg("line", { class: "axis-line", x1: pad, y1: height - pad, x2: width - pad, y2: height - pad }));
+      root.append(svg("polyline", { class: "line", points: points.map((p, i) => `${x(i)},${y(p[1])}`).join(" ") }));
+      points.forEach((p, i) => root.append(svg("circle", { class: "end-dot", cx: x(i), cy: y(p[1]), r: 3,
+        tabindex: "0", "aria-label": `${p[0]}: ${Math.round(p[1] * 10) / 10}` })));
+      $("trend").replaceChildren(root);
+      const latest = points[points.length - 1];
+      $("trend-summary").textContent = `${points.length} days · latest ${Math.round(latest[1] * 10) / 10} on ${latest[0].slice(0, 10)} · range ${Math.round(low * 10) / 10}–${Math.round(high * 10) / 10}`;
+    } catch (e) {
+      $("trend").replaceChildren(h("p", { class: "error-text", text: e.message }));
+    }
   }
 
   function renderState(data) {
@@ -400,6 +449,7 @@
     renderSources(data);
     renderJobs(data);
     renderMetrics(data);
+    renderTrend();
     const agents = data.agents || {};
     $("agent-claude").textContent = agents.claude_code || "";
     $("agent-codex").textContent = agents.codex || "";
@@ -407,12 +457,20 @@
     $("agent-http").textContent = agents.http || "";
     $("agent-local").textContent = agents.local || "";
     const connect = data.connect || {};
+    $("oura-button").disabled = !connect.keyring;
+    $("oura-note").textContent = !connect.keyring
+      ? "Install an OS keyring backend before connecting Oura. Client secrets never go into the database."
+      : "Register http://127.0.0.1:8478/callback in your Oura application. The secret goes into your OS keyring, never the database.";
     $("fitbit-button").disabled = !connect.fitbit || !connect.keyring;
     $("garmin-button").disabled = !connect.garmin || !connect.keyring;
     if (!connect.garmin && connect.garmin_note) $("garmin-note").textContent = connect.garmin_note;
     $("fitbit-note").textContent = !connect.fitbit
       ? "Fitbit needs an application client id first: register one at dev.fitbit.com, set TICKER_FITBIT_CLIENT_ID and restart Ticker."
       : "Opens Fitbit's sign-in in a new tab; Ticker picks the account up once you approve.";
+    const complete = (data.sources || []).length > 0 && (data.metrics || []).length > 0;
+    $("start-progress").textContent = complete
+      ? "Data is connected — choose a trend or ask a question."
+      : "Start by connecting or importing a source.";
     $("foot").textContent = "Ticker " + (app.version || "") + " · data in " + (app.db || "?")
       + (app.timezone ? " · times in " + app.timezone : "");
   }
@@ -464,13 +522,22 @@
 
     $("oura-form").addEventListener("submit", async (event) => {
       event.preventDefault();
+      const tab = window.open("about:blank", "_blank");
       try {
         const reply = await call("POST", "/ui/connect/oura",
-          { token: $("oura-token").value, name: $("oura-name").value });
-        $("oura-token").value = "";
-        $("connect-oura").open = false;
-        say("connect-message", `Connected ${reply.result.name}. The first sync has started.`, true);
-      } catch (e) { say("connect-message", e.message, false); }
+          { client_id: $("oura-client-id").value,
+            client_secret: $("oura-client-secret").value,
+            name: $("oura-name").value });
+        $("oura-client-secret").value = "";
+        if (tab) { tab.opener = null; tab.location.href = reply.result.url; }
+        const node = $("connect-message");
+        node.className = "form-message ok";
+        node.replaceChildren("Finish authorizing Ticker in the new tab. ",
+          h("a", { href: reply.result.url, target: "_blank", rel: "noopener noreferrer", text: "Open it again" }));
+      } catch (e) {
+        if (tab) tab.close();
+        say("connect-message", e.message, false);
+      }
       refreshState();
     });
 
@@ -531,6 +598,47 @@
         say("connect-message", "Importing. Large exports take a few minutes; progress shows above.", true);
       } catch (e) { say("connect-message", e.message, false); }
       refreshState();
+    });
+
+    $("pick-import").addEventListener("click", async () => {
+      try {
+        const reply = await call("POST", "/ui/import/pick", {});
+        if (reply.result.path) $("apple-path").value = reply.result.path;
+      } catch (e) { say("connect-message", e.message, false); }
+    });
+
+    $("trend-metric").addEventListener("change", () => {
+      trendMetric = $("trend-metric").value;
+      renderTrend();
+    });
+
+    $("backup").addEventListener("click", async () => {
+      try {
+        const reply = await call("POST", "/ui/backup", {});
+        say("support-message", "Verified backup created: " + reply.result.file, true);
+      } catch (e) { say("support-message", e.message, false); }
+    });
+
+    $("check-update").addEventListener("click", async () => {
+      try {
+        const update = (await call("POST", "/ui/update/check", {})).result;
+        const node = $("support-message");
+        node.className = "form-message ok";
+        if (update.available) node.replaceChildren(`Ticker ${update.latest} is available. `,
+          h("a", { href: update.url, target: "_blank", rel: "noopener noreferrer", text: "Open release" }));
+        else node.textContent = "Ticker " + update.current + " is current.";
+      } catch (e) { say("support-message", e.message, false); }
+    });
+
+    $("diagnostics").addEventListener("click", async () => {
+      try {
+        const info = await call("GET", "/ui/diagnostics");
+        const blob = new Blob([JSON.stringify(info, null, 2) + "\n"], { type: "application/json" });
+        const link = h("a", { href: URL.createObjectURL(blob), download: "ticker-diagnostics.json" });
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        say("support-message", "Diagnostics downloaded. They contain no recordings or device identifiers.", true);
+      } catch (e) { say("support-message", e.message, false); }
     });
 
     for (const button of document.querySelectorAll("[data-copy]")) {

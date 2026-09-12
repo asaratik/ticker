@@ -66,8 +66,8 @@ HTTP_HOST = os.environ.get("HRM_HTTP_HOST", "0.0.0.0")
 # http_source.start().
 HTTP_PORT = int(os.environ.get("HRM_HTTP_PORT", "8476"))
 
-# Shared secret the watch must send. Unset means anything that can reach the
-# port can post readings -- fine on a home LAN, worth setting anywhere else.
+# Shared secret the watch must send. When unset, the LAN listener generates a
+# fresh pairing token and shows it in Ticker's local page.
 HTTP_TOKEN = os.environ.get("HRM_HTTP_TOKEN") or None
 
 # How long without a reading before the UI stops calling the watch connected.

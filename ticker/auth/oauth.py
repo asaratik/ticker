@@ -1,9 +1,11 @@
 """
-OAuth2 authorization-code flow with PKCE, over a loopback redirect.
+OAuth2 authorization-code flows over a loopback redirect.
 
 The flow redirects to
 `http://127.0.0.1:<ephemeral>/callback`, bound to loopback only, with PKCE
-and a `state` nonce, and shut the listener down the moment the code arrives.
+for public clients, a `state` nonce, and the listener shut down the moment
+the code arrives. Confidential clients can authenticate the token request
+with their client secret instead.
 
 Why loopback rather than a custom URI scheme or a hosted callback: a desktop
 app has nowhere secret to put a client secret, so it is a *public* client.
@@ -338,7 +340,7 @@ class LoopbackReceiver:
 
 def build_authorization_url(authorize_url: str, client_id: str,
                             redirect_uri: str, scope: str, state: str,
-                            code_challenge: str,
+                            code_challenge: Optional[str],
                             extra: Optional[Dict[str, str]] = None) -> str:
     """The URL to open in the user's browser to start the flow."""
     params = {
@@ -347,9 +349,10 @@ def build_authorization_url(authorize_url: str, client_id: str,
         "redirect_uri": redirect_uri,
         "scope": scope,
         "state": state,
-        "code_challenge": code_challenge,
-        "code_challenge_method": "S256",
     }
+    if code_challenge:
+        params.update(code_challenge=code_challenge,
+                      code_challenge_method="S256")
     params.update(extra or {})
     joiner = "&" if "?" in authorize_url else "?"
     return authorize_url + joiner + urllib.parse.urlencode(params)
@@ -397,7 +400,8 @@ def _describe(payload: bytes) -> str:
 
 def _post_token_request(token_url: str, form: Dict[str, str],
                         client_id: str, client_secret: Optional[str],
-                        transport: Optional[Transport]) -> TokenSet:
+                        transport: Optional[Transport],
+                        secret_in_body: bool = False) -> TokenSet:
     """Shared body of the code exchange and the refresh."""
     transport = transport or _urllib_transport
     headers = {
@@ -405,7 +409,9 @@ def _post_token_request(token_url: str, form: Dict[str, str],
         "Accept": "application/json",
         "User-Agent": USER_AGENT,
     }
-    if client_secret:
+    if client_secret and secret_in_body:
+        form = dict(form, client_secret=client_secret)
+    elif client_secret:
         # A confidential client authenticates the token request itself.
         # Public clients (the desktop default) send client_id in the form and
         # rely on PKCE instead.
@@ -439,9 +445,10 @@ def _post_token_request(token_url: str, form: Dict[str, str],
 
 
 def exchange_code(token_url: str, client_id: str, code: str,
-                  code_verifier: str, redirect_uri: str,
+                  code_verifier: Optional[str], redirect_uri: str,
                   client_secret: Optional[str] = None,
-                  transport: Optional[Transport] = None) -> TokenSet:
+                  transport: Optional[Transport] = None,
+                  secret_in_body: bool = False) -> TokenSet:
     """Trade an authorization code for tokens.
 
     `redirect_uri` must be byte-identical to the one used in the
@@ -453,16 +460,18 @@ def exchange_code(token_url: str, client_id: str, code: str,
         "code": code,
         "redirect_uri": redirect_uri,
         "client_id": client_id,
-        "code_verifier": code_verifier,
     }
+    if code_verifier:
+        form["code_verifier"] = code_verifier
     return _post_token_request(token_url, form, client_id, client_secret,
-                               transport)
+                               transport, secret_in_body)
 
 
 def refresh_tokens(token_url: str, client_id: str, tokens: TokenSet,
                    persist: Callable[[TokenSet], None],
                    client_secret: Optional[str] = None,
-                   transport: Optional[Transport] = None) -> TokenSet:
+                   transport: Optional[Transport] = None,
+                   secret_in_body: bool = False) -> TokenSet:
     """Exchange a refresh token for a new TokenSet, persisting it first.
 
     The ordering matters because refresh tokens rotate, so the response
@@ -483,7 +492,7 @@ def refresh_tokens(token_url: str, client_id: str, tokens: TokenSet,
         "client_id": client_id,
     }
     refreshed = _post_token_request(token_url, form, client_id, client_secret,
-                                    transport)
+                                    transport, secret_in_body)
     if not refreshed.refresh_token:
         refreshed.refresh_token = tokens.refresh_token
 

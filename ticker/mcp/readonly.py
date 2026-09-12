@@ -109,6 +109,12 @@ def open_readonly(path: Path) -> Tuple[sqlite3.Connection, _Clock]:
     except sqlite3.Error as exc:
         conn.close()
         raise DatabaseUnavailable("cannot read {}: {}".format(path, exc))
+    if version > migrate.LATEST_VERSION:
+        conn.close()
+        raise DatabaseUnavailable(
+            "The database at {} uses schema version {}, newer than this "
+            "Ticker supports ({}). Upgrade Ticker before reading it.".format(
+                path, version, migrate.LATEST_VERSION))
     if version < migrate.LATEST_VERSION:
         conn.close()
         # Upgrading is a write, and this connection doesn't make those.

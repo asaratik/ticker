@@ -138,7 +138,18 @@ def start(tmp_path, monkeypatch, keyring):
 
 
 @pytest.fixture
-def app(start):
+def app(start, monkeypatch):
+    def fake_add_oauth(conn, vendor, name, open_browser=None,
+                       client_id=None, client_secret=None):
+        assert vendor == "oura"
+        open_browser("https://cloud.ouraring.com/oauth/authorize?state=x")
+        ref = secrets.auth_ref(vendor, name)
+        secrets.set_secret(ref, json.dumps({"access_token": "access",
+                                            "refresh_token": "refresh",
+                                            "oauth_client_id": client_id,
+                                            "oauth_client_secret": client_secret}))
+        return store.ensure_source(conn, "pull", vendor, name, auth_ref=ref)
+    monkeypatch.setattr(setup, "add_oauth", fake_add_oauth)
     return start()
 
 
@@ -165,14 +176,17 @@ def test_the_page_and_its_state_are_served(app):
 # -- cloud accounts ------------------------------------------------------------
 
 def connect_oura(app):
-    status, reply = call(app.url + "/ui/connect/oura", "POST", {"token": "s3cret"})
+    status, reply = call(app.url + "/ui/connect/oura", "POST", {
+        "client_id": "client", "client_secret": "s3cret"})
     assert status == 200, reply
-    return reply["result"]["source_id"]
+    wait_for(lambda: query(app.path, "SELECT id FROM sources WHERE vendor='oura'"))
+    return query(app.path, "SELECT id FROM sources WHERE vendor='oura'")[0][0]
 
 
 def test_connecting_oura_on_the_page_stores_the_token_and_syncs(app):
     source_id = connect_oura(app)
-    assert app.kept == {"oura:Ring": "s3cret"}
+    assert set(app.kept) == {"oura:Ring"}
+    assert "s3cret" in app.kept["oura:Ring"]
     wait_for(lambda: app.made and app.made[0].fetches)
     _, state = call(app.url + "/ui/state")
     ring = next(s for s in state["sources"] if s["id"] == source_id)

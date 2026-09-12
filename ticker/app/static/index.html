@@ -16,6 +16,19 @@
 </header>
 
 <main class="grid" id="main">
+  <section class="card wide onboarding" aria-labelledby="start-title">
+    <div class="card-head">
+      <h2 id="start-title">Get started</h2>
+      <span class="hint" id="start-progress">Checking your setup&hellip;</span>
+    </div>
+    <ol class="start-steps">
+      <li><strong>Connect or import</strong><span>Add Oura, Fitbit, Garmin, Apple Health, or a live monitor below.</span></li>
+      <li><strong>Confirm data arrived</strong><span>Your sources and recorded metrics show their freshness.</span></li>
+      <li><strong>Explore a trend</strong><span>Choose a metric to see the last 30 days.</span></li>
+      <li><strong>Ask a question</strong><span>Connect a local model when you want a plain-language answer.</span></li>
+    </ol>
+  </section>
+
   <section class="card wide ask" aria-labelledby="ask-title">
     <div class="card-head">
       <h2 id="ask-title">Ask your data</h2>
@@ -103,18 +116,22 @@
         <summary>Oura ring</summary>
         <form class="stack" id="oura-form">
           <label class="field">
-            <span class="field-label">Personal access token</span>
-            <input id="oura-token" type="password" autocomplete="off" required>
+            <span class="field-label">OAuth client ID</span>
+            <input id="oura-client-id" type="text" autocomplete="off" required>
+          </label>
+          <label class="field">
+            <span class="field-label">OAuth client secret</span>
+            <input id="oura-client-secret" type="password" autocomplete="off" required>
           </label>
           <label class="field">
             <span class="field-label">Name <span class="muted">(optional, if you have more than one)</span></span>
             <input id="oura-name" type="text" maxlength="60" placeholder="Ring" autocomplete="off">
           </label>
           <div class="row">
-            <button class="btn primary" type="submit">Connect Oura</button>
-            <a class="linkish" href="https://cloud.ouraring.com/personal-access-tokens" target="_blank" rel="noopener noreferrer">Get a token</a>
+            <button class="btn primary" id="oura-button" type="submit">Connect Oura</button>
+            <a class="linkish" href="https://cloud.ouraring.com/user/applications" target="_blank" rel="noopener noreferrer">Create an Oura application</a>
           </div>
-          <p class="hint">The token goes into your OS keyring, never the database.</p>
+          <p class="hint" id="oura-note">Register <code>http://127.0.0.1:8478/callback</code> as the redirect URI. The secret goes into your OS keyring, never the database.</p>
         </form>
       </details>
 
@@ -164,6 +181,7 @@
             <input id="apple-path" type="text" placeholder="/path/to/export.zip" autocomplete="off" spellcheck="false" required>
           </label>
           <div class="row">
+            <button class="btn" id="pick-import" type="button">Choose file&hellip;</button>
             <button class="btn primary" type="submit">Import</button>
           </div>
         </form>
@@ -171,6 +189,32 @@
       <p class="hint">A chest strap or a Garmin watch? Turn it on under Live heart rate.</p>
     </div>
     <p class="form-message" id="connect-message" role="status"></p>
+  </section>
+
+  <section class="card wide explore" aria-labelledby="explore-title">
+    <div class="card-head">
+      <div>
+        <h2 id="explore-title">Explore your last 30 days</h2>
+        <p class="hint">Daily values stay on this computer.</p>
+      </div>
+      <label class="field">
+        <span class="field-label">Metric</span>
+        <select id="trend-metric" aria-label="Metric to chart"></select>
+      </label>
+    </div>
+    <div class="trend" id="trend" role="img" aria-label="Historical metric chart"></div>
+    <p class="hint" id="trend-summary"></p>
+  </section>
+
+  <section class="card" aria-labelledby="support-title">
+    <h2 id="support-title">Backup and support</h2>
+    <p class="lede">Create a verified snapshot before an upgrade, check for a release, or download private-record-free diagnostics for a support report.</p>
+    <div class="row">
+      <button class="btn" id="backup" type="button">Create backup</button>
+      <button class="btn" id="check-update" type="button">Check for updates</button>
+      <button class="btn" id="diagnostics" type="button">Download diagnostics</button>
+    </div>
+    <p class="form-message" id="support-message" role="status"></p>
   </section>
 
   <section class="card" aria-labelledby="agents-title">

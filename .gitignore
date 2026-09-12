@@ -8,6 +8,8 @@ __pycache__/
 # PyInstaller build output
 build/
 dist/
+# Release workflow staging area (downloaded artifacts, never source).
+release-assets/
 # Generated specs are throwaway; packaging/ticker.spec is the real one that
 # build.py builds from, so it has to survive this rule.
 *.spec

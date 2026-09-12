@@ -52,11 +52,11 @@ class FakeRuntime:
         self.calls.append(("sync", source_id))
         return {"queued": True}
 
-    def connect_token(self, vendor, token, name):
-        if not token:
-            raise AppError(400, "paste the access token first")
-        self.calls.append(("connect", vendor, token, name))
-        return {"source_id": 7, "name": name or "Ring"}
+    def connect_oura(self, client_id, client_secret, name):
+        if not client_id or not client_secret:
+            raise AppError(400, "enter the client id and client secret")
+        self.calls.append(("oura", client_id, client_secret, name))
+        return {"job_id": "7", "url": "https://cloud.ouraring.com/oauth/authorize"}
 
     def connect_fitbit(self, name):
         raise RuntimeError("database is on fire")
@@ -64,6 +64,18 @@ class FakeRuntime:
     def start_import(self, path, name):
         self.calls.append(("import", path, name))
         return {"job_id": "1"}
+
+    def pick_import(self):
+        return {"path": "C:/export.zip"}
+
+    def create_backup(self):
+        return {"file": "C:/ticker-backup.sqlite3"}
+
+    def diagnostics(self):
+        return {"ticker_version": "test", "integrity": "ok"}
+
+    def check_update(self):
+        return {"current": "1.0.0", "latest": "1.0.1", "available": True}
 
     def disconnect(self, source_id):
         self.calls.append(("disconnect", source_id))
@@ -232,15 +244,16 @@ def test_the_live_source_can_be_switched(ui, runtime):
     assert runtime.live.calls == [("source", "ble")]
 
 
-def test_connecting_oura_passes_the_token_and_name(ui, runtime):
-    status, payload = post(ui, "/ui/connect/oura", {"token": "t0k", "name": "Mine"})
-    assert status == 200 and payload["result"]["source_id"] == 7
-    assert runtime.calls == [("connect", "oura", "t0k", "Mine")]
+def test_connecting_oura_passes_oauth_credentials_and_name(ui, runtime):
+    status, payload = post(ui, "/ui/connect/oura", {
+        "client_id": "client", "client_secret": "secret", "name": "Mine"})
+    assert status == 200 and payload["result"]["job_id"] == "7"
+    assert runtime.calls == [("oura", "client", "secret", "Mine")]
 
 
 def test_an_app_error_keeps_its_status_and_message(ui):
     status, payload = post(ui, "/ui/connect/oura", {})
-    assert status == 400 and "token" in payload["error"]
+    assert status == 400 and "client id" in payload["error"]
 
 
 def test_an_unexpected_failure_is_500_not_a_crash(ui):

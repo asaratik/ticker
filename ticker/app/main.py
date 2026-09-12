@@ -26,6 +26,8 @@ import argparse
 import importlib
 import json
 import logging
+import logging.handlers
+import os
 import sys
 import time
 import urllib.error
@@ -45,6 +47,7 @@ PASSTHROUGH = {
     "sync": "ticker.ingest.sync",
     "rollup": "ticker.db.rollup",
     "backfill": "ticker.db.backfill",
+    "backup": "ticker.db.backup",
 }
 
 SUBCOMMANDS = """\
@@ -56,6 +59,8 @@ other commands:
   ticker agent ...            stream a strap to a Ticker on another machine
   ticker sync --once          one cloud sync without the app
   ticker rollup | backfill    maintenance
+  ticker backup create [FILE] verified SQLite backup
+  ticker backup restore FILE  restore while Ticker is stopped
 """
 
 # How long `ticker mcp` stops trying a Ticker that didn't answer before it
@@ -66,6 +71,8 @@ BRIDGE_RETRY_SEC = 30.0
 
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "--smoke-test":
+        return smoke_main(argv[1:])
     if argv and argv[0] in PASSTHROUGH:
         return importlib.import_module(PASSTHROUGH[argv[0]]).main(argv[1:])
     if argv and argv[0] == "mcp":
@@ -87,9 +94,44 @@ def gui_main() -> int:
     if getattr(sys, "frozen", False) or sys.stdout is None or sys.stderr is None:
         log_path = tconfig.DB_PATH.parent / "ticker.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_file = open(log_path, "a", buffering=1, encoding="utf-8")
-        sys.stdout = sys.stderr = log_file
+        handler = logging.handlers.RotatingFileHandler(
+            log_path, maxBytes=2 * 1024 * 1024, backupCount=3,
+            encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(name)s: %(message)s"))
+        logging.getLogger().addHandler(handler)
+        logging.getLogger().setLevel(logging.INFO)
+        # A windowed PyInstaller executable has no console. Keep incidental
+        # prints from libraries harmless; Ticker's own messages use logging.
+        if sys.stdout is None or sys.stderr is None:
+            log_file = open(os.devnull, "w", encoding="utf-8")
+            sys.stdout = sys.stderr = log_file
     return main()
+
+
+def smoke_main(argv: List[str]) -> int:
+    """Launch the packaged runtime against throwaway data and prove its UI answers."""
+    parser = argparse.ArgumentParser(prog="ticker --smoke-test")
+    parser.add_argument("result", type=Path)
+    args = parser.parse_args(argv)
+    import tempfile
+    from ticker.app.runtime import Runtime
+    with tempfile.TemporaryDirectory(prefix="ticker-smoke-") as folder:
+        runtime = Runtime(Path(folder) / "ticker.sqlite3", host="127.0.0.1",
+                          port=0, builders={})
+        try:
+            runtime.start()
+            with urllib.request.urlopen(runtime.url + "/ui/state",
+                                        timeout=10) as response:
+                state = json.loads(response.read())
+            if response.status != 200 or "app" not in state:
+                raise RuntimeError("packaged UI did not return application state")
+            args.result.write_text(json.dumps({"ok": True,
+                                               "url": runtime.url}),
+                                   encoding="utf-8")
+        finally:
+            runtime.stop()
+    return 0
 
 
 # -- ticker (the app) ------------------------------------------------------
@@ -116,7 +158,9 @@ def open_page(url: str, token: Optional[str] = None) -> None:
     try:
         webbrowser.open(target)
     except Exception:
-        log.info("open %s in your browser", target)
+        # Never put the one-time page token in a log or crash report.
+        log.info("open %s in your browser (the token is in the address bar)",
+                 url)
 
 
 def run_main(argv: List[str]) -> int:

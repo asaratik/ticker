@@ -144,14 +144,15 @@ def test_the_script_is_executable_in_git():
 # -- workflow order -------------------------------------------------------
 
 def test_the_app_is_signed_before_it_is_notarized(workflow):
-    signed, notarized = order(workflow, "Sign the app bundle",
-                              "Notarize and staple the app")
+    signed, notarized = order(workflow,
+                              'codesign --force --timestamp --options runtime --entitlements',
+                              "./packaging/macos/notarize.sh /tmp/notarize-app.zip")
     assert signed < notarized
 
 
 def test_the_certificate_is_imported_before_anything_is_signed(workflow):
-    imported, signed = order(workflow, "Import the Developer ID certificate",
-                             "Sign the app bundle")
+    imported, signed = order(workflow, "Import macOS Developer ID certificate",
+                             "Sign, notarize, and staple macOS app")
     assert imported < signed
 
 
@@ -186,7 +187,7 @@ def test_the_zip_is_made_after_the_app_is_stapled(workflow):
     # hold its ticket or the download is blocked on a machine that is
     # offline.
     stapled, zipped = order(workflow, "xcrun stapler staple dist/Ticker.app",
-                            "Zip the macOS app bundle")
+                            "Package macOS app")
     assert stapled < zipped
 
 
@@ -194,7 +195,7 @@ def test_the_disk_image_is_built_after_the_app_is_stapled(workflow):
     # hdiutil copies the bundle as it finds it: an image built from an
     # unstapled app contains an unstapled app forever after.
     stapled, dmg = order(workflow, "xcrun stapler staple dist/Ticker.app",
-                         "Build the disk image")
+                         "build.py --dmg-only")
     assert stapled < dmg
 
 
@@ -202,7 +203,7 @@ def test_the_disk_image_is_signed_notarized_and_stapled(workflow):
     # Section 12.5: "Ship a signed .dmg, notarized as a whole." Stapling the
     # app inside does not staple the image, and Gatekeeper checks the image
     # on open.
-    step = workflow.index("Sign, notarize and staple the disk image")
+    step = workflow.index("Sign, notarize, and staple macOS disk image")
     tail = workflow[step:]
     codesign = tail.index("codesign --force")
     notarize = tail.index("notarize.sh")
@@ -213,30 +214,29 @@ def test_the_disk_image_is_signed_notarized_and_stapled(workflow):
 def test_the_hashes_are_taken_after_everything_that_changes_the_bytes(workflow):
     # Signing and stapling both rewrite the file. Checksums taken earlier
     # are published against downloads that will not match them.
-    dmg, hashes = order(workflow, "Sign, notarize and staple the disk image",
-                        "Recompute SHA256SUMS")
+    dmg, hashes = order(workflow, "Sign, notarize, and staple macOS disk image",
+                        "Stage signed release files")
     assert dmg < hashes
 
 
 def test_the_disk_image_is_attached_to_the_release(workflow):
-    assert "dist/Ticker-*.dmg" in workflow
+    assert "Ticker-${TICKER_VERSION}-macos-arm64.dmg" in workflow
 
 
 def test_signing_is_skipped_rather_than_failing_without_a_certificate(workflow):
     # A fork has no Developer Program membership; it should still be able to
     # cut an unsigned release rather than fail on a secret it never had.
-    assert "MACOS_SIGNING_ENABLED" in workflow
-    for step in ("Sign the app bundle", "Notarize and staple the app"):
-        assert "MACOS_SIGNING_ENABLED == 'true'" in step_body(workflow, step), step
+    assert "MACOS_SIGNING_AVAILABLE" in workflow
+    step = "Sign, notarize, and staple macOS app"
+    assert "MACOS_SIGNING_AVAILABLE == 'true'" in step_body(workflow, step)
 
 
 def test_the_unsigned_path_still_produces_both_artifacts(workflow):
     # The zip and the dmg are built unconditionally; only the signing and
     # notarization steps are gated.
-    for step in ("Zip the macOS app bundle", "Build the disk image"):
-        body = step_body(workflow, step)
-        assert "MACOS_SIGNING_ENABLED" not in body, step
-        assert "runner.os == 'macOS'" in body, step
+    body = step_body(workflow, "Package macOS app")
+    assert "MACOS_SIGNING_AVAILABLE" not in body
+    assert "matrix.platform == 'macos'" in body
 
 
 # -- build.py's part ------------------------------------------------------
@@ -251,17 +251,17 @@ def test_a_dmg_is_a_release_artifact(tmp_path, monkeypatch):
     monkeypatch.setattr(build, "DIST", tmp_path)
     monkeypatch.setattr(build.sys, "platform", "darwin")
     (tmp_path / "Ticker.zip").write_bytes(b"zip")
-    (tmp_path / "Ticker-1.2.3.dmg").write_bytes(b"dmg")
+    (tmp_path / "Ticker-1.2.3-macos-arm64.dmg").write_bytes(b"dmg")
     names = {p.name for p in build.artifacts()}
-    assert names == {"Ticker.zip", "Ticker-1.2.3.dmg"}
+    assert names == {"Ticker.zip", "Ticker-1.2.3-macos-arm64.dmg"}
 
 
 def test_the_dmg_is_hashed_with_everything_else(tmp_path, monkeypatch):
     monkeypatch.setattr(build, "DIST", tmp_path)
     monkeypatch.setattr(build.sys, "platform", "darwin")
-    (tmp_path / "Ticker-1.2.3.dmg").write_bytes(b"dmg")
+    (tmp_path / "Ticker-1.2.3-macos-arm64.dmg").write_bytes(b"dmg")
     assert build.write_hashes(required=True) == 0
-    assert "Ticker-1.2.3.dmg" in (tmp_path / "SHA256SUMS").read_text()
+    assert "Ticker-1.2.3-macos-arm64.dmg" in (tmp_path / "SHA256SUMS").read_text()
 
 
 def test_building_a_dmg_without_an_app_fails_loudly(tmp_path, monkeypatch, capsys):
@@ -278,7 +278,7 @@ def test_the_dmg_is_named_after_the_version(tmp_path, monkeypatch):
     assert build.build_dmg("1.2.3") == 0
     command = [str(c) for c in issued[0]]
     assert command[0] == "hdiutil"
-    assert command[-1].endswith("Ticker-1.2.3.dmg")
+    assert command[-1].endswith("Ticker-1.2.3-macos-arm64.dmg")
     # -ov, so a re-run in a dirty dist/ replaces the image rather than
     # failing on it.
     assert "-ov" in command

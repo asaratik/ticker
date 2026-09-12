@@ -17,7 +17,10 @@ import sys
 
 from PyInstaller.utils.hooks import collect_all
 
-ROOT = os.path.dirname(SPECPATH)          # noqa: F821 -- injected by PyInstaller
+# SPECPATH points at packaging/ticker.spec; source files live one directory
+# above that. Keeping this explicit prevents a build from accidentally
+# looking for package data under packaging/ticker/.
+ROOT = os.path.dirname(os.path.dirname(SPECPATH))  # noqa: F821
 
 datas = []
 binaries = []
@@ -35,13 +38,23 @@ datas += [
     # The app's page is served off disk the same way.
     (os.path.join(ROOT, "ticker", "app", "static", "*"),
      os.path.join("ticker", "app", "static")),
+    (os.path.join(ROOT, "build", "build-info.json"), "."),
 ]
 
 # `ticker agent`, `sync`, `rollup` and `backfill` are reached through
 # importlib (see ticker/app/main.py), which PyInstaller's import tracing
 # cannot follow; without these the packaged app would fail on them.
 hiddenimports += ["ticker.agent.main", "ticker.ingest.sync",
-                  "ticker.db.rollup", "ticker.db.backfill"]
+                  "ticker.db.rollup", "ticker.db.backfill",
+                  "ticker.db.backup"]
+
+# These connectors and keyring backends are imported dynamically after the
+# user enables them, so static tracing cannot see them.
+for package in ("garminconnect", "curl_cffi", "keyring"):
+    extra_datas, extra_binaries, extra_hidden = collect_all(package)
+    datas += extra_datas
+    binaries += extra_binaries
+    hiddenimports += extra_hidden
 
 if sys.platform == "win32":
     # bleak's Windows BLE backend uses the winrt bindings, which

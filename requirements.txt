@@ -8,4 +8,6 @@ tzdata>=2024.1; sys_platform == 'win32'
 # environment. Optional: without it the BLE and HTTP
 # sources still work and pull sources report themselves unauthenticated.
 keyring>=24.0
+garminconnect>=0.2.38
+curl_cffi>=0.7
 

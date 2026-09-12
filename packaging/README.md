@@ -4,6 +4,7 @@
 python build.py                 # test + build dist/Ticker (a folder)
 python build.py --skip-tests    # straight to packaging
 python build.py --installer     # Windows: also build the Inno Setup installer
+python build.py --installer-only --version 1.2.3  # wrap an existing signed bundle
 python build.py --hashes-only   # rewrite dist/SHA256SUMS
 python build.py --winget-only --version 1.2.3   # fill in dist/winget/
 ```
@@ -29,17 +30,13 @@ compression is off for the same reason.
 
 The folder is wrapped in an installer, so users never see the difference.
 
-## What is *not* set up here
+## Signing policy
 
-**Nothing in this repo is signed, and none of the signing configuration has
-ever been executed.** The workflow steps are written against Azure Artifact
-Signing's documented interface, but they have never run — there is no Azure
-account, no certificate profile, and no way to test them short of setting
-those up. Treat the release workflow's signing steps as a starting point to
-verify, not as working configuration.
-
-The workflow skips signing entirely when `AZURE_CLIENT_ID` is unset, so
-releases still build (unsigned) until that changes.
+The release workflow skips Windows signing when `AZURE_CLIENT_ID` is unset
+and macOS signing when `MACOS_CERTIFICATE` is unset; manifests record that
+state. Set the repository variable `SIGN_RELEASES=true` once both signing
+services are configured. The workflow then fails instead of publishing an
+unsigned Windows or macOS build.
 
 ### To actually sign on Windows
 
@@ -165,11 +162,9 @@ Budget a few minutes of wall clock per submission.
 
 5. Tag a release and watch the run.
 
-As on Windows, the whole macOS signing path is **written but never
-executed** — there is no Developer Program membership behind this repo. With
-`MACOS_CERTIFICATE` unset every signing and notarization step is skipped and
-the job still publishes an unsigned `Ticker.zip` and `.dmg`, which is what a
-fork gets. Treat the steps as configuration to verify, not as known-good.
+With `MACOS_CERTIFICATE` unset, signing and notarization are skipped and the
+manifest reports an unsigned build. With `SIGN_RELEASES=true`, missing Apple
+credentials fail the release before publication.
 
 Unlike SmartScreen, notarization has no reputation curve: a notarized app
 opens cleanly the first time, and an unnotarized one is blocked outright on
@@ -191,9 +186,8 @@ file, no package manager, no runtime -- which matches how the other two
 platforms ship.
 
 `appimagetool` is not downloaded by the script. Put it on `PATH` or set
-`$APPIMAGETOOL`; CI installs it as its own step so that fetching an
-executable off the internet is visible in the build log rather than buried
-in a script. On a machine without FUSE (GitHub runners included) set
+`$APPIMAGETOOL`; CI downloads pinned version 1.9.1 as its own step and checks
+its SHA-256 digest before execution. On a machine without FUSE (GitHub runners included) set
 `APPIMAGE_EXTRACT_AND_RUN=1`, which the script already defaults to.
 
 The whole onedir folder goes into the AppDir, not just the executable:

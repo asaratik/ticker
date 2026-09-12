@@ -16,7 +16,7 @@ shipped as package data: no build step, no framework, nothing to install.
     POST /ui/session/start      {"label": "..."}
     POST /ui/session/stop
     POST /ui/sync/{id}          sync a cloud account now
-    POST /ui/connect/oura       {"token": "...", "name": "..."}
+    POST /ui/connect/oura       {"client_id", "client_secret", "name"}
     POST /ui/connect/fitbit     -> {"url": ...} for the page to open
     POST /ui/connect/garmin     {"email", "password", "name"}; may answer
                                 status 'needs_code' ...
@@ -75,6 +75,8 @@ PAGE_HEADERS = {
         "style-src 'self'; script-src 'self'; base-uri 'none'; "
         "form-action 'none'; frame-ancestors 'none'"),
     "X-Content-Type-Options": "nosniff",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=(), usb=()",
+    "Cross-Origin-Opener-Policy": "same-origin",
     "Referrer-Policy": "no-referrer",
     "Cache-Control": "no-cache",
 }
@@ -137,6 +139,8 @@ class Ui:
             return _json(200, self.runtime.state())
         if route == "/ui/ask/config":
             return _json(200, self.runtime.ask_config())
+        if route == "/ui/diagnostics":
+            return _json(200, self.runtime.diagnostics())
         if route.startswith("/ui/ask/") and route[len("/ui/ask/"):].isdigit():
             return _json(200, self.runtime.ask_status(route[len("/ui/ask/"):]))
         return _json(404, {"ok": False, "error": "not found"})
@@ -150,8 +154,9 @@ class Ui:
         if route == "/ui/session/stop":
             return _ok(rt.live.stop_session())
         if route == "/ui/connect/oura":
-            return _ok(rt.connect_token("oura", _text(payload, "token"),
-                                        _text(payload, "name")))
+            return _ok(rt.connect_oura(_text(payload, "client_id"),
+                                       _text(payload, "client_secret"),
+                                       _text(payload, "name")))
         if route == "/ui/connect/fitbit":
             return _ok(rt.connect_fitbit(_text(payload, "name")))
         if route == "/ui/connect/garmin":
@@ -164,6 +169,12 @@ class Ui:
         if route == "/ui/import":
             return _ok(rt.start_import(_text(payload, "path"),
                                        _text(payload, "name")))
+        if route == "/ui/import/pick":
+            return _ok(rt.pick_import())
+        if route == "/ui/backup":
+            return _ok(rt.create_backup())
+        if route == "/ui/update/check":
+            return _ok(rt.check_update())
         if route == "/ui/quit":
             rt.request_stop()
             return _ok({"stopping": True})

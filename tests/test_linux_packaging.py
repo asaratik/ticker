@@ -251,7 +251,7 @@ def test_an_appimage_is_a_release_artifact(tmp_path, monkeypatch):
     """Otherwise it is built, never published, and never hashed."""
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "Ticker-1.2.3-x86_64.AppImage").write_bytes(b"stub")
+    (dist / "Ticker-1.2.3-linux-x86_64.AppImage").write_bytes(b"stub")
     monkeypatch.setattr(build, "DIST", dist)
     monkeypatch.setattr(build.sys, "platform", "linux")
     assert any(p.name.endswith(".AppImage") for p in build.artifacts())
@@ -260,7 +260,7 @@ def test_an_appimage_is_a_release_artifact(tmp_path, monkeypatch):
 def test_the_appimage_is_hashed_with_everything_else(tmp_path, monkeypatch):
     dist = tmp_path / "dist"
     dist.mkdir()
-    (dist / "Ticker-1.2.3-x86_64.AppImage").write_bytes(b"stub")
+    (dist / "Ticker-1.2.3-linux-x86_64.AppImage").write_bytes(b"stub")
     monkeypatch.setattr(build, "DIST", dist)
     monkeypatch.setattr(build.sys, "platform", "linux")
     build.write_hashes(required=True)
@@ -268,14 +268,14 @@ def test_the_appimage_is_hashed_with_everything_else(tmp_path, monkeypatch):
 
 
 def test_the_appimage_is_named_after_the_version(script):
-    assert "Ticker-${VERSION}-x86_64.AppImage" in script
+    assert "Ticker-${VERSION}-linux-x86_64.AppImage" in script
 
 
 # -- The release workflow ---------------------------------------------------
 
 def test_the_workflow_installs_appimagetool_before_building(workflow):
-    install = workflow.index("Install appimagetool")
-    built = workflow.index("Build the AppImage")
+    install = workflow.index("Install verified appimagetool 1.9.1")
+    built = workflow.index("Build Linux AppImage")
     assert install < built
 
 
@@ -286,19 +286,19 @@ def test_the_workflow_builds_through_build_py(workflow):
 
 def test_the_workflow_builds_the_appimage_before_hashing(workflow):
     """Hashes taken first would not cover it (section 12.3)."""
-    built = workflow.index("Build the AppImage")
-    hashed = workflow.index("Recompute SHA256SUMS")
+    built = workflow.index("Build Linux AppImage")
+    hashed = workflow.index("Stage unsigned release files")
     assert built < hashed
 
 
 def test_the_appimage_is_attached_to_the_release(workflow):
-    assert "dist/Ticker-*.AppImage" in workflow
+    assert "--stage-release" in workflow
 
 
 def test_the_workflow_only_runs_the_linux_steps_on_linux(workflow):
-    for step in ("Install appimagetool", "Build the AppImage"):
+    for step in ("Install verified appimagetool 1.9.1", "Build Linux AppImage"):
         after = workflow[workflow.index(step):workflow.index(step) + 400]
-        assert "runner.os == 'Linux'" in after, step
+        assert "matrix.platform == 'linux'" in after, step
 
 
 def test_the_packaging_notes_document_building_the_appimage():

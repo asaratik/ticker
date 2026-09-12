@@ -6,17 +6,16 @@ Configure a pull source: store its token, register it in the database.
     python -m ticker.auth.setup list
     python -m ticker.auth.setup remove oura --name "Ring"
 
-Two auth styles, because the vendors do not agree on one. Oura
-takes a personal access token that the user pastes; Fitbit needs the OAuth
-flow, which opens a browser and waits for the loopback redirect. Both end
+Oura and Fitbit use OAuth flows that open a browser and wait for a loopback
+redirect. Both end
 in the same place: the secret goes to the OS keyring and the database
 stores only the name of the entry.
 
-A pasted token is read from a prompt, never from an argument. A token on the
-command line ends up in shell history, in `ps` output, and in any crash
-report that captures argv, so environment variables are ruled out too. It
-goes straight into the OS keyring; the database
-stores only the name of the entry.
+Legacy token-based integrations (kept for existing installations) read a
+pasted token from a prompt, never from an argument. A token on the command
+line ends up in shell history, in `ps` output, and in any crash report that
+captures argv, so environment variables are ruled out too. It goes straight
+into the OS keyring; the database stores only the name of the entry.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from ticker.sources.base import SourceError
 
 # Vendors this can configure: kind, default display name, auth style.
 VENDORS = {
-    "oura": ("pull", "Ring", "token"),
+    "oura": ("pull", "Ring", "oauth"),
     "fitbit": ("pull", "Fitbit", "oauth"),
     "garmin": ("pull", "Garmin", "password"),
 }
@@ -80,7 +79,8 @@ def add(conn, vendor: str, display_name: str,
 
 
 def add_oauth(conn, vendor: str, display_name: str,
-              open_browser=None) -> int:
+              open_browser=None, client_id: Optional[str] = None,
+              client_secret: Optional[str] = None) -> int:
     """Register a source via the OAuth flow. Returns the source id.
 
     The browser half is deliberately the caller's: this opens a tab, prints
@@ -89,7 +89,41 @@ def add_oauth(conn, vendor: str, display_name: str,
     redirect lands.
     """
     from ticker import config as tconfig
-    from ticker.sources import fitbit
+    from ticker.auth import oauth
+    from ticker.sources import fitbit, oura
+
+    if vendor == "oura":
+        client_id = (client_id or "").strip()
+        client_secret = client_secret or ""
+        if not client_id or not client_secret:
+            raise ValueError("Oura needs your OAuth client id and client secret")
+        kind, _default, _style = VENDORS[vendor]
+        ref = secrets.auth_ref(vendor, display_name)
+        # Oura requires an exact registered redirect and a confidential
+        # client secret. Users register this fixed loopback URI in their
+        # Oura application before connecting.
+        receiver = oauth.LoopbackReceiver(port=tconfig.OURA_REDIRECT_PORT)
+        state = oauth.generate_state()
+        url = oauth.build_authorization_url(
+            oura.AUTHORIZE_URL, client_id, receiver.redirect_uri,
+            oura.SCOPES, state, None)
+        try:
+            receiver.start()
+            (open_browser or _open_browser)(url)
+            code = receiver.wait(state)
+            tokens = oauth.exchange_code(
+                oura.TOKEN_URL, client_id, code, None, receiver.redirect_uri,
+                client_secret=client_secret, secret_in_body=True)
+            tokens.extra.update(oauth_client_id=client_id,
+                                oauth_client_secret=client_secret)
+            oauth.save_tokens(ref, tokens)
+        finally:
+            receiver.close()
+        source_id = store.ensure_source(conn, kind, vendor, display_name,
+                                        auth_ref=ref)
+        conn.execute("UPDATE sources SET auth_ref = ?, enabled = 1 WHERE id = ?",
+                     (ref, source_id))
+        return source_id
 
     if vendor != "fitbit":
         raise ValueError("no OAuth flow for {!r}".format(vendor))
@@ -201,7 +235,14 @@ def _dispatch(conn, args) -> int:
             return 1
         try:
             if style == "oauth":
-                source_id = add_oauth(conn, args.vendor, name)
+                if args.vendor == "oura":
+                    source_id = add_oauth(
+                        conn, args.vendor, name,
+                        client_id=input("Oura OAuth client id: "),
+                        client_secret=getpass.getpass(
+                            "Oura OAuth client secret (input hidden): "))
+                else:
+                    source_id = add_oauth(conn, args.vendor, name)
             elif style == "password":
                 # For a box with no browser: the same sign-in as the page.
                 source_id = add_password(

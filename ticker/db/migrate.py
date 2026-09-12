@@ -25,7 +25,6 @@ statements fed in one at a time.
 from __future__ import annotations
 
 import re
-import shutil
 import sqlite3
 from pathlib import Path
 from typing import Callable, Dict, Iterator, List, Optional, Sequence, Tuple
@@ -345,8 +344,35 @@ def open_db(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def backup_path(db_path: Path) -> Path:
-    return Path(str(db_path) + ".v1.bak")
+def backup_path(db_path: Path, version: int = 1) -> Path:
+    """The recovery snapshot taken before upgrading ``version``.
+
+    The schema version is part of the name so a later migration never
+    overwrites the only recovery point from an earlier one.
+    """
+    return Path(str(db_path) + ".v{}.bak".format(version))
+
+
+def snapshot(conn: sqlite3.Connection, destination: Path) -> Path:
+    """Make a complete SQLite snapshot, including committed WAL pages."""
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    scratch = destination.with_name(destination.name + ".tmp")
+    if scratch.exists():
+        scratch.unlink()
+    target = sqlite3.connect(str(scratch))
+    try:
+        conn.backup(target)
+        if target.execute("PRAGMA quick_check").fetchone() != ("ok",):
+            raise MigrationError("backup integrity check failed")
+    finally:
+        target.close()
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(str(destination) + suffix)
+        if sidecar.exists():
+            sidecar.unlink()
+    scratch.replace(destination)
+    return destination
 
 
 def migrate(db_path: Path, backup: bool = True) -> List[int]:
@@ -361,6 +387,11 @@ def migrate(db_path: Path, backup: bool = True) -> List[int]:
     conn = open_db(db_path)
     try:
         version = current_version(conn)
+        if version > LATEST_VERSION:
+            raise MigrationError(
+                "database schema version {} is newer than this Ticker "
+                "supports ({}); upgrade Ticker before opening it".format(
+                    version, LATEST_VERSION))
         pending = [m for m in available() if m[0] > version]
         if not pending:
             return []
@@ -368,8 +399,7 @@ def migrate(db_path: Path, backup: bool = True) -> List[int]:
         # Section 3 step 1: copy the file before touching anything. Only
         # worth doing when there was already data in it.
         if backup and existed and version >= 1:
-            conn.execute("PRAGMA wal_checkpoint(FULL)")
-            shutil.copy2(db_path, backup_path(db_path))
+            snapshot(conn, backup_path(db_path, version))
 
         applied = []
         for number, name, path in pending:

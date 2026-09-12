@@ -7,7 +7,7 @@ name = "ticker"
 version = "0.2.0"
 description = "Your health data in one local SQLite file, served to AI agents over MCP"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.12"
 license = { text = "MIT" }
 keywords = ["mcp", "heart-rate", "bluetooth", "ble", "hrv", "oura", "fitbit",
             "apple-health", "quantified-self"]
@@ -25,18 +25,12 @@ classifiers = [
 dependencies = [
     "bleak>=1.0",
     "tzdata>=2024.1; sys_platform == 'win32'",
+    "keyring>=24.0",
+    "garminconnect>=0.2.38",
+    "curl_cffi>=0.7",
 ]
 
 [project.optional-dependencies]
-# Pull-source tokens live in the OS keyring. Optional so
-# that a BLE-only install doesn't drag in a keyring backend it never uses.
-cloud = ["keyring>=24.0"]
-# Garmin Connect sign-in. The community library it rests on needs Python
-# 3.12+, so on older interpreters this installs nothing and the page says
-# why; Garmin's data export and .fit files import on any version.
-garmin = ["keyring>=24.0",
-          "garminconnect; python_version >= '3.12'",
-          "curl_cffi; python_version >= '3.12'"]
 dev = ["pytest>=7.0", "pyinstaller>=6.0", "pyflakes>=3.0"]
 
 [project.urls]

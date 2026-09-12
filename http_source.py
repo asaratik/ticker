@@ -13,10 +13,11 @@ Wire format, both accepted so the watch can use whichever is easier:
     GET  /hr?hr=142&rr=812.5,800.0&device=Forerunner
     GET  /health    -> {"ok": true}, for checking reachability from the watch
 
-Optional shared secret: set config.HTTP_TOKEN and send it as a `token`
-query parameter or an X-Ticker-Token header. Without one, anything on the
-network that can reach the port can inject heart rate readings -- fine on a
-home LAN, worth turning on anywhere else.
+Set config.HTTP_TOKEN and send it as a `token` query parameter or an
+X-Ticker-Token header. When listening beyond loopback, Ticker generates a
+strong pairing token if none was configured and shows it in the status.
+Use a trusted LAN or put the endpoint behind TLS; the token authenticates
+the watch but HTTP does not encrypt the reading or token in transit.
 
 Unlike BLE there is no connection to observe, so "connected" here means "a
 reading arrived recently": the first push flips the UI to connected, and a
@@ -28,6 +29,7 @@ from __future__ import annotations
 import hmac
 import json
 import queue
+import secrets as pysecrets
 import socket
 import threading
 import time
@@ -45,6 +47,9 @@ MAX_HR = 300
 # posts a few hundred bytes; anything larger is not something to read just
 # to be polite about closing the connection.
 MAX_DRAIN_BYTES = 64 * 1024
+MAX_BODY_BYTES = 64 * 1024
+REQUEST_TIMEOUT_SEC = 5.0
+MAX_REQUEST_THREADS = 16
 
 TOKEN_HEADER = "X-Ticker-Token"
 
@@ -126,6 +131,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     server_version = "Ticker"
 
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(REQUEST_TIMEOUT_SEC)
+
     def log_message(self, fmt, *args):
         # Silence the default one-line-per-request stderr logging: at one
         # reading per second that would fill the packaged app's log file
@@ -165,7 +174,14 @@ class _Handler(BaseHTTPRequestHandler):
         except ValueError:
             self._send_json(400, {"ok": False, "error": "bad Content-Length"})
             return
-        body = self._read_body(length)
+        if length < 0 or length > MAX_BODY_BYTES:
+            self._send_json(413, {"ok": False, "error": "body too large"})
+            return
+        try:
+            body = self._read_body(length)
+        except (TimeoutError, OSError):
+            self._send_json(408, {"ok": False, "error": "request body timed out"})
+            return
 
         if body:
             try:
@@ -263,6 +279,28 @@ class _Handler(BaseHTTPRequestHandler):
             pass  # watch hung up mid-response -- nothing to do about it
 
 
+class _BoundedServer(ThreadingHTTPServer):
+    """Threaded server with a hard cap for unauthenticated LAN traffic."""
+
+    daemon_threads = True
+
+    def server_bind(self):
+        self._slots = threading.BoundedSemaphore(MAX_REQUEST_THREADS)
+        super().server_bind()
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 class HTTPHRSource(HRSource):
     """Receives heart rate pushed over HTTP and streams it onto the queue."""
 
@@ -272,7 +310,11 @@ class HTTPHRSource(HRSource):
         super().__init__(out_queue)
         self.host = host
         self.port = port
-        self.token = token
+        # A LAN listener is paired by default. Loopback remains tokenless for
+        # tests and local integrations that cannot be reached from the LAN.
+        self.token = token or (pysecrets.token_urlsafe(24)
+                               if host not in ("127.0.0.1", "::1", "localhost")
+                               else None)
         self.sample_timeout = sample_timeout
 
         self._server: Optional[ThreadingHTTPServer] = None
@@ -294,7 +336,7 @@ class HTTPHRSource(HRSource):
         if self._server is not None or self._stop_event.is_set():
             return  # already started, or already stopped
         try:
-            self._server = ThreadingHTTPServer((self.host, self.port), _Handler)
+            self._server = _BoundedServer((self.host, self.port), _Handler)
         except OSError as exc:
             # Port already taken, a host address this machine doesn't have,
             # or a reserved port. Reported rather than raised on a background
@@ -318,7 +360,8 @@ class HTTPHRSource(HRSource):
         self._watch_thread = threading.Thread(target=self._watch_for_silence, daemon=True)
         self._watch_thread.start()
 
-        self.emit_status("searching", message=f"Waiting for a watch on {self.url}")
+        pairing = " · token {}".format(self.token) if self.token else ""
+        self.emit_status("searching", message=f"Waiting for a watch on {self.url}{pairing}")
 
     def stop(self):
         if self._stop_event.is_set():

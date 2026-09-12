@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -35,6 +37,8 @@ ROOT = Path(__file__).resolve().parent
 SPEC = ROOT / "packaging" / "ticker.spec"
 DIST = ROOT / "dist"
 WINGET = ROOT / "packaging" / "windows" / "winget"
+LOCK = ROOT / "requirements-build.lock"
+BUILD_INFO = ROOT / "build" / "build-info.json"
 
 # Only used to build the InstallerUrl. CI overrides it with the repository
 # the release is actually being cut from.
@@ -83,11 +87,11 @@ def artifacts() -> list:
     """The files a release publishes, per platform."""
     if sys.platform == "darwin":
         found = [p for p in (DIST / "Ticker.zip",) if p.exists()]
-        found.extend(DIST.glob("Ticker-*.dmg"))
+        found.extend(DIST.glob("Ticker-*-macos-arm64.dmg"))
         return found
     found = []
-    for pattern in ("Ticker.zip", "Ticker-*.exe", "Ticker.tar.gz",
-                    "Ticker-*.AppImage"):
+    for pattern in ("Ticker.zip", "Ticker-*-windows-x86_64-setup.exe",
+                    "Ticker.tar.gz", "Ticker-*-linux-x86_64.AppImage"):
         found.extend(DIST.glob(pattern))
     return found
 
@@ -111,7 +115,7 @@ def build_dmg(version: str) -> int:
         print("no {} to wrap -- run the build first".format(app),
               file=sys.stderr)
         return 1
-    dmg = DIST / "Ticker-{}.dmg".format(version)
+    dmg = DIST / "Ticker-{}-macos-arm64.dmg".format(version)
     # -ov: a re-run in a dirty dist/ should replace the image rather than
     # fail on it. UDZO is the compressed read-only format every macOS
     # release ships.
@@ -226,10 +230,10 @@ def winget_manifests(version: str, installer: str, digest: str,
 
 def find_installer(version: str):
     """The built installer for a version, if it is there to be hashed."""
-    exact = DIST / "Ticker-{}-setup.exe".format(version)
+    exact = DIST / "Ticker-{}-windows-x86_64-setup.exe".format(version)
     if exact.exists():
         return exact
-    found = sorted(DIST.glob("Ticker-*-setup.exe"))
+    found = sorted(DIST.glob("Ticker-*-windows-x86_64-setup.exe"))
     return found[0] if len(found) == 1 else None
 
 
@@ -252,7 +256,7 @@ def write_winget(version: str, repo: str) -> int:
 
     installer = find_installer(version)
     if installer is None:
-        print("no Ticker-{}-setup.exe in {} to publish a winget manifest "
+        print("no Ticker-{}-windows-x86_64-setup.exe in {} to publish a winget manifest "
               "for".format(version, DIST), file=sys.stderr)
         return 1
 
@@ -273,12 +277,109 @@ def write_winget(version: str, repo: str) -> int:
     return 0
 
 
+def write_build_info(version: str, commit: str = "") -> None:
+    if not commit:
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=ROOT,
+                text=True, stderr=subprocess.DEVNULL).strip()
+        except (OSError, subprocess.CalledProcessError):
+            commit = "unknown"
+    BUILD_INFO.parent.mkdir(parents=True, exist_ok=True)
+    BUILD_INFO.write_text(json.dumps({"version": version, "commit": commit},
+                                     sort_keys=True) + "\n", encoding="utf-8")
+
+
+def packaged_executable() -> Path:
+    if sys.platform == "darwin":
+        return DIST / "Ticker.app" / "Contents" / "MacOS" / "Ticker"
+    if sys.platform == "win32":
+        return DIST / "Ticker" / "Ticker.exe"
+    return DIST / "Ticker" / "Ticker"
+
+
+def smoke_packaged() -> None:
+    executable = packaged_executable()
+    if not executable.exists():
+        raise RuntimeError("packaged executable is missing: {}".format(executable))
+    with tempfile.TemporaryDirectory(prefix="ticker-build-smoke-") as folder:
+        result = Path(folder) / "result.json"
+        completed = subprocess.run(
+            [str(executable), "--smoke-test", str(result)], timeout=45)
+        if completed.returncode or not result.exists():
+            raise RuntimeError("packaged smoke test failed with exit code {}".format(
+                completed.returncode))
+        payload = json.loads(result.read_text(encoding="utf-8"))
+        if payload.get("ok") is not True:
+            raise RuntimeError("packaged smoke test did not report success")
+
+
+def stage_release(platform_name: str, version: str, commit: str,
+                  signed: bool) -> int:
+    """Create one platform's uniquely named, self-describing release set."""
+    if version == "0.0.0" or not commit:
+        print("--stage-release needs a real --version and --commit",
+              file=sys.stderr)
+        return 1
+    mapping = {
+        "windows": [
+            (DIST / "Ticker.zip",
+             "Ticker-{}-windows-x86_64.zip".format(version)),
+            (find_installer(version),
+             "Ticker-{}-windows-x86_64-setup.exe".format(version)),
+        ],
+        "macos": [
+            (DIST / "Ticker.zip", "Ticker-{}-macos-arm64.zip".format(version)),
+            (DIST / "Ticker-{}-macos-arm64.dmg".format(version),
+             "Ticker-{}-macos-arm64.dmg".format(version)),
+        ],
+        "linux": [
+            (DIST / "Ticker.tar.gz",
+             "Ticker-{}-linux-x86_64.tar.gz".format(version)),
+            (DIST / "Ticker-{}-linux-x86_64.AppImage".format(version),
+             "Ticker-{}-linux-x86_64.AppImage".format(version)),
+        ],
+    }
+    sources = mapping[platform_name]
+    missing = [str(path) for path, _ in sources if path is None or not path.exists()]
+    if missing:
+        print("missing release artifacts: {}".format(", ".join(missing)),
+              file=sys.stderr)
+        return 1
+    out = DIST / "release-{}".format(platform_name)
+    if out.exists():
+        shutil.rmtree(out)
+    out.mkdir(parents=True)
+    files = []
+    for source, name in sources:
+        target = out / name
+        shutil.copy2(source, target)
+        files.append(target)
+    if platform_name == "windows" and (DIST / "winget").exists():
+        for manifest in (DIST / "winget").glob("*.yaml"):
+            shutil.copy2(manifest, out / manifest.name)
+    sums = out / "SHA256SUMS-{}.txt".format(platform_name)
+    sums.write_text(sha256sums(files), encoding="utf-8")
+    manifest = {
+        "version": version, "commit": commit, "platform": platform_name,
+        "signed": bool(signed),
+        "files": [{"name": path.name, "sha256": sha256(path),
+                   "bytes": path.stat().st_size} for path in files],
+    }
+    (out / "manifest-{}.json".format(platform_name)).write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    print("staged {} release files in {}".format(platform_name, out))
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--skip-tests", action="store_true",
                         help="skip the test suite and go straight to packaging")
     parser.add_argument("--installer", action="store_true",
                         help="also build the Windows installer (needs Inno Setup)")
+    parser.add_argument("--installer-only", action="store_true",
+                        help="wrap the existing signed Windows folder; do not rebuild it")
     parser.add_argument("--version", default=os.environ.get("TICKER_VERSION", "0.0.0"),
                         help="version stamped into the installer")
     parser.add_argument("--hashes-only", action="store_true",
@@ -295,7 +396,21 @@ def main(argv=None):
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY",
                                                          DEFAULT_REPO),
                         help="owner/name the winget InstallerUrl points at")
+    parser.add_argument("--stage-release", choices=("windows", "macos", "linux"),
+                        help="stage uniquely named files, checksums and a manifest")
+    parser.add_argument("--commit", default=os.environ.get("GITHUB_SHA", ""))
+    parser.add_argument("--signed", action="store_true")
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
+
+    if args.installer_only:
+        if sys.platform != "win32":
+            print("--installer-only is Windows-only", file=sys.stderr)
+            return 1
+        return 0 if build_installer(args.version) else 1
+
+    if args.stage_release:
+        return stage_release(args.stage_release, args.version, args.commit,
+                             args.signed)
 
     if args.hashes_only:
         return write_hashes(required=True)
@@ -316,8 +431,8 @@ def main(argv=None):
             return 1
         return build_appimage(args.version)
 
-    run([sys.executable, "-m", "pip", "install", "--quiet", "--upgrade",
-         "-r", "requirements-dev.txt"])
+    run([sys.executable, "-m", "pip", "install", "--quiet",
+         "--require-hashes", "--only-binary=:all:", "-r", LOCK])
 
     if args.skip_tests:
         print("\n== Skipping tests (--skip-tests) ==")
@@ -327,7 +442,9 @@ def main(argv=None):
              "http_source.py"])
         run([sys.executable, "-m", "pytest", "-v"])
 
+    write_build_info(args.version, args.commit)
     run([sys.executable, "-m", "PyInstaller", "--noconfirm", SPEC])
+    smoke_packaged()
 
     if args.installer:
         if sys.platform != "win32":

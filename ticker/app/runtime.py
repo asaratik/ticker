@@ -35,6 +35,7 @@ from ticker.app import assistant as ask
 from ticker.app.live import LiveMonitor
 from ticker.app.pulls import PullSupervisor
 from ticker.app.settings import Settings
+from ticker.app import support
 from ticker.app.web import AppError, Ui
 from ticker.auth import secrets, setup
 from ticker.db import store
@@ -232,6 +233,9 @@ class Runtime:
             "notes": overview.get("notes", []),
             "jobs": jobs,
             "connect": {"keyring": secrets.available(),
+                        "oura": bool(secrets.available()),
+                        "oura_redirect": "http://127.0.0.1:{}{}".format(
+                            tconfig.OURA_REDIRECT_PORT, "/callback"),
                         "fitbit": bool(tconfig.FITBIT_CLIENT_ID),
                         "garmin": garmin.available(self._garmin_library) is None,
                         "garmin_note": garmin.available(self._garmin_library)},
@@ -255,7 +259,7 @@ class Runtime:
 
     def connect_token(self, vendor: str, token: Optional[str],
                       name: Optional[str]) -> Dict[str, Any]:
-        """A cloud account that takes a pasted token (Oura)."""
+        """Compatibility path for an existing token-based integration."""
         if setup.VENDORS.get(vendor, (None, None, None))[2] != "token":
             raise AppError(400, "{} doesn't connect with a token".format(vendor))
         token = (token or "").strip()
@@ -273,6 +277,46 @@ class Runtime:
         # Rebuilt rather than woken: a connector may hold the old token.
         self.pulls.restart(source_id)
         return {"source_id": source_id, "name": name}
+
+    def connect_oura(self, client_id: Optional[str],
+                     client_secret: Optional[str],
+                     name: Optional[str]) -> Dict[str, Any]:
+        """Start Oura OAuth and return its authorization URL to the page."""
+        client_id = (client_id or "").strip()
+        client_secret = client_secret or ""
+        if not client_id or not client_secret:
+            raise AppError(400, "enter the client id and client secret from "
+                                   "your Oura application")
+        self._require_keyring()
+        name = (name or "").strip() or setup.VENDORS["oura"][1]
+        job = self._job("oura", "Connecting Oura ({})".format(name))
+        opened = threading.Event()
+        found: Dict[str, str] = {}
+
+        def open_browser(url: str) -> None:
+            found["url"] = url
+            opened.set()
+
+        def work() -> None:
+            conn = store.connect(self.db_path, migrate_first=False)
+            try:
+                source_id = setup.add_oauth(
+                    conn, "oura", name, open_browser=open_browser,
+                    client_id=client_id, client_secret=client_secret)
+                self.pulls.restart(source_id)
+                job.finish("done", "connected as source #{}".format(source_id))
+            except Exception as exc:
+                job.finish("failed", str(exc))
+            finally:
+                conn.close()
+                opened.set()
+
+        threading.Thread(target=work, name="ticker-oura-signin",
+                         daemon=True).start()
+        opened.wait(OAUTH_START_TIMEOUT_SEC)
+        if "url" not in found:
+            raise AppError(502, job.detail or "Oura sign-in didn't start")
+        return {"job_id": job.id, "url": found["url"]}
 
     def connect_fitbit(self, name: Optional[str]) -> Dict[str, Any]:
         """Start Fitbit's sign-in and hand back the URL for the page to open.
@@ -410,6 +454,31 @@ class Runtime:
 
         threading.Thread(target=work, name="ticker-import", daemon=True).start()
         return {"job_id": job.id}
+
+    def pick_import(self) -> Dict[str, Any]:
+        try:
+            return {"path": support.pick_import_file()}
+        except Exception as exc:
+            raise AppError(501, "file picker unavailable: {}".format(exc))
+
+    def create_backup(self) -> Dict[str, Any]:
+        from ticker.db import backup
+        if self.writer is not None and not self.writer.flush(timeout=15):
+            raise AppError(503, "could not finish pending database writes")
+        try:
+            made = backup.create(self.db_path)
+        except (OSError, ValueError) as exc:
+            raise AppError(500, str(exc))
+        return {"file": str(made), "name": made.name}
+
+    def diagnostics(self) -> Dict[str, Any]:
+        return support.diagnostics(self.db_path, self.url or "")
+
+    def check_update(self) -> Dict[str, Any]:
+        try:
+            return support.check_update()
+        except RuntimeError as exc:
+            raise AppError(502, str(exc))
 
     def disconnect(self, source_id: int) -> Dict[str, Any]:
         """Forget a cloud account's credentials and stop syncing it. Its

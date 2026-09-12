@@ -85,6 +85,9 @@ NORMALIZE_BATCH = int(os.environ.get("TICKER_NORMALIZE_BATCH", "1000"))
 # Register an application at dev.fitbit.com to get one.
 FITBIT_CLIENT_ID = os.environ.get("TICKER_FITBIT_CLIENT_ID") or ""
 
+# Oura OAuth applications must register this exact local redirect URI.
+OURA_REDIRECT_PORT = int(os.environ.get("TICKER_OURA_REDIRECT_PORT", "8478"))
+
 # The IANA zone the Fitbit account reports in. Fitbit answers with local
 # wall-clock times carrying no offset, so this is what makes them
 # interpretable at all -- see ticker/sources/fitbit.py. Defaults to the same

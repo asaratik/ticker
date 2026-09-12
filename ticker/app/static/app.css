@@ -149,6 +149,10 @@ input[type="text"], input[type="password"] {
   border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
   min-width: 0;
 }
+select {
+  font: inherit; color: var(--ink); background: var(--page);
+  border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px;
+}
 input:disabled { opacity: 0.6; }
 
 /* -- status -------------------------------------------------------------- */
@@ -248,6 +252,22 @@ input:disabled { opacity: 0.6; }
 .form-message { font-size: 13px; min-height: 18px; overflow-wrap: anywhere; }
 .form-message.ok { color: var(--good-text); }
 .form-message.bad { color: var(--critical); }
+
+/* -- onboarding and history --------------------------------------------- */
+
+.start-steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px;
+  list-style-position: inside; margin: 0; padding: 0; }
+.start-steps li { background: var(--page); border: 1px solid var(--border);
+  border-radius: 8px; padding: 10px; }
+.start-steps strong, .start-steps span { display: block; }
+.start-steps span { color: var(--ink-2); font-size: 12.5px; margin-top: 4px; }
+.trend { min-height: 180px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--page); padding: 8px; }
+.trend .chart-svg { height: 180px; }
+
+@media (max-width: 760px) {
+  .start-steps { grid-template-columns: 1fr 1fr; }
+}
 
 /* -- agents -------------------------------------------------------------- */
 

@@ -2,7 +2,7 @@
 #
 # Submit one artifact to Apple's notary service and wait for the verdict.
 #
-#   ./packaging/macos/notarize.sh dist/Ticker-1.2.3.dmg
+#   ./packaging/macos/notarize.sh dist/Ticker-1.2.3-macos-arm64.dmg
 #
 # Takes a .dmg, a .pkg, or a .zip of a .app -- the notary service will not
 # take a bare .app, which is why the workflow dittos the bundle first.

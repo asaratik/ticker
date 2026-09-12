@@ -88,10 +88,10 @@ def test_hashes_only_writes_the_file(tmp_path, monkeypatch):
 def test_artifacts_picks_up_the_installer(tmp_path, monkeypatch):
     monkeypatch.setattr(build, "DIST", tmp_path)
     (tmp_path / "Ticker.zip").write_bytes(b"a")
-    (tmp_path / "Ticker-1.2.3-setup.exe").write_bytes(b"b")
+    (tmp_path / "Ticker-1.2.3-windows-x86_64-setup.exe").write_bytes(b"b")
     (tmp_path / "not-a-release-file.txt").write_bytes(b"c")
     names = {p.name for p in build.artifacts()}
-    assert "Ticker-1.2.3-setup.exe" in names
+    assert "Ticker-1.2.3-windows-x86_64-setup.exe" in names
     assert "not-a-release-file.txt" not in names
 
 
@@ -189,7 +189,7 @@ def test_the_installer_does_not_delete_the_database_on_uninstall():
 def test_the_installer_version_is_supplied_by_the_build():
     text = INNO.read_text(encoding="utf-8")
     assert "AppVersion" in text
-    assert "OutputBaseFilename=Ticker-{#AppVersion}-setup" in text
+    assert "OutputBaseFilename=Ticker-{#AppVersion}-windows-x86_64-setup" in text
 
 
 @pytest.mark.parametrize("name", [
@@ -239,7 +239,7 @@ def test_the_license_the_winget_manifest_points_at_exists():
 def fake_release(tmp_path, monkeypatch, version="1.2.3", payload=b"installer"):
     """A dist/ with one built installer in it."""
     monkeypatch.setattr(build, "DIST", tmp_path)
-    installer = tmp_path / "Ticker-{}-setup.exe".format(version)
+    installer = tmp_path / "Ticker-{}-windows-x86_64-setup.exe".format(version)
     installer.write_bytes(payload)
     return installer
 
@@ -262,7 +262,7 @@ def test_the_filled_installer_url_points_at_the_tag_and_the_built_file(
     fake_release(tmp_path, monkeypatch)
     build.write_winget("1.2.3", "owner/repo")
     assert ("InstallerUrl: https://github.com/owner/repo/releases/download/"
-            "v1.2.3/Ticker-1.2.3-setup.exe") in filled(tmp_path)
+            "v1.2.3/Ticker-1.2.3-windows-x86_64-setup.exe") in filled(tmp_path)
 
 
 def test_every_filled_manifest_gets_the_release_version(tmp_path, monkeypatch):
@@ -338,7 +338,7 @@ def test_winget_refuses_the_placeholder_version(tmp_path, monkeypatch, capsys):
 def test_winget_needs_an_installer_to_hash(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(build, "DIST", tmp_path)
     assert build.write_winget("1.2.3", "owner/repo") == 1
-    assert "no Ticker-1.2.3-setup.exe" in capsys.readouterr().err
+    assert "no Ticker-1.2.3-windows-x86_64-setup.exe" in capsys.readouterr().err
 
 
 def test_a_stale_installer_from_another_version_is_not_hashed(
@@ -346,8 +346,8 @@ def test_a_stale_installer_from_another_version_is_not_hashed(
     """Two installers in dist/ and no way to tell which the release is: an
     ambiguous guess would publish a hash for the wrong binary."""
     monkeypatch.setattr(build, "DIST", tmp_path)
-    (tmp_path / "Ticker-1.0.0-setup.exe").write_bytes(b"old")
-    (tmp_path / "Ticker-1.1.0-setup.exe").write_bytes(b"older")
+    (tmp_path / "Ticker-1.0.0-windows-x86_64-setup.exe").write_bytes(b"old")
+    (tmp_path / "Ticker-1.1.0-windows-x86_64-setup.exe").write_bytes(b"older")
     assert build.write_winget("1.2.3", "owner/repo") == 1
 
 
@@ -360,8 +360,10 @@ def test_the_winget_manifests_are_filled_in_after_the_installer_is_signed():
     """Signing rewrites the installer's bytes. A hash taken before it is
     wrong, and a wrong InstallerSha256 fails winget validation."""
     text = RELEASE.read_text(encoding="utf-8")
-    assert text.index("Sign the installer") < text.index("--winget-only")
+    assert text.index("Sign Windows installer") < text.index("--winget-only")
 
 
 def test_the_release_attaches_the_filled_manifests():
-    assert "dist/winget/*.yaml" in RELEASE.read_text(encoding="utf-8")
+    text = RELEASE.read_text(encoding="utf-8")
+    assert "--stage-release" in text
+    assert "release-assets" in text

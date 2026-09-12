@@ -291,7 +291,7 @@ def test_a_reserved_windows_port_explains_itself(monkeypatch):
         error.winerror = 10013
         raise error
 
-    monkeypatch.setattr(http_source, "ThreadingHTTPServer", refuse)
+    monkeypatch.setattr(http_source, "_BoundedServer", refuse)
 
     out = queue.Queue()
     HTTPHRSource(out, host="127.0.0.1", port=8787).start()

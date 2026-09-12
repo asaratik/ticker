@@ -1,10 +1,9 @@
 """
 Oura Ring, as a PullSource.
 
-Personal access tokens are simpler than OAuth2 for this project: one user,
-one ring, and a token the user pastes once. The token lives in the OS
-keyring; `auth_ref` names the
-entry, and nothing here ever holds it longer than a request.
+Oura credentials come from its OAuth2 authorization-code flow. Access and
+refresh tokens, plus the user's own OAuth application credentials, live in
+the OS keyring; `auth_ref` names the entry.
 
 This is the connector that decides whether the abstraction is real. Where
 the BLE source is a stream of one instant metric, Oura is a paginated HTTP
@@ -37,7 +36,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
-from ticker.auth import secrets
+from ticker.auth import oauth, secrets
 from ticker.model import Observation, SessionRecord, parse_iso
 from ticker.sources.base import (AuthExpired, PermanentError, RateLimited,
                                  SourceHealth, TransientError)
@@ -45,6 +44,9 @@ from ticker.sources.base import (AuthExpired, PermanentError, RateLimited,
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://api.ouraring.com/v2/usercollection"
+AUTHORIZE_URL = "https://cloud.ouraring.com/oauth/authorize"
+TOKEN_URL = "https://api.ouraring.com/oauth/token"
+SCOPES = "daily heartrate personal spo2Daily workout session"
 USER_AGENT = "ticker/2 (+https://github.com/ticker)"
 TIMEOUT_SEC = 30.0
 
@@ -91,6 +93,8 @@ class OuraSource:
     def __init__(self, token: Optional[str] = None,
                  auth_ref: Optional[str] = None,
                  base_url: str = BASE_URL,
+                 token_url: str = TOKEN_URL,
+                 token_transport: Optional[Callable] = None,
                  transport: Callable = _urllib_transport,
                  on_payload: Optional[Callable[[str, datetime, datetime, bytes], None]] = None,
                  on_session: Optional[Callable[[SessionRecord], None]] = None,
@@ -98,6 +102,8 @@ class OuraSource:
         self._token = token
         self.auth_ref = auth_ref
         self.base_url = base_url.rstrip("/")
+        self.token_url = token_url
+        self._token_transport = token_transport
         self._transport = transport
         self._on_payload = on_payload
         self._on_session = on_session
@@ -130,16 +136,39 @@ class OuraSource:
                             last_error=self._last_error)
 
     def token(self) -> Optional[str]:
-        """The personal access token, from the keyring unless one was passed.
+        """Return a live OAuth access token, refreshing it when needed.
 
-        Fetched per use rather than cached at construction, so revoking or
-        replacing it in the keyring takes effect without a restart.
+        A raw string is still accepted for existing installations so users
+        can authorize again without losing previously recorded data.
         """
         if self._token is not None:
             return self._token
         if self.auth_ref is None:
             return None
-        return secrets.get_secret(self.auth_ref)
+        blob = secrets.get_secret(self.auth_ref)
+        if not blob:
+            return None
+        try:
+            tokens = oauth.TokenSet.from_json(blob)
+        except (ValueError, KeyError):
+            return blob
+        if not tokens.expired():
+            return tokens.access_token
+        client_id = tokens.extra.get("oauth_client_id", "")
+        client_secret = tokens.extra.get("oauth_client_secret", "")
+        if not client_id or not client_secret:
+            raise AuthExpired("Oura authorization must be renewed")
+        previous_extra = dict(tokens.extra)
+
+        def persist(refreshed: oauth.TokenSet) -> None:
+            refreshed.extra.update(previous_extra)
+            oauth.save_tokens(self.auth_ref, refreshed)
+
+        refreshed = oauth.refresh_tokens(
+            self.token_url, client_id, tokens, persist=persist,
+            client_secret=client_secret, transport=self._token_transport,
+            secret_in_body=True)
+        return refreshed.access_token
 
     # -- PullSource ------------------------------------------------------
 

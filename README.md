@@ -27,7 +27,7 @@ happens there:
 
 - **Ask** a question, answered from your own data by a model you run
   yourself (Ollama, LM Studio) — without any of it leaving the machine.
-- **Connect** an Oura ring (paste a token), a Fitbit or Garmin account (sign
+- **Connect** an Oura ring, Fitbit or Garmin account (sign
   in), or an Apple Health or Garmin export (give the path).
 - **Live heart rate**: turn on a Bluetooth strap or a Garmin watch, watch the
   reading, and start a session to record it.
@@ -247,12 +247,14 @@ HRV itself, so any source with RR intervals gets it for free.
 
 ### Oura
 
-**Connect** → **Oura ring**, and paste a personal access token from
-<https://cloud.ouraring.com/personal-access-tokens>. It goes into the OS
-keyring — Credential Manager on Windows, Keychain on macOS, Secret Service
-on Linux — and the database stores only the *name* of the keyring entry.
-Deliberately there is no environment-variable option: those are inherited by
-every child process and end up in crash reports. Syncing starts at once.
+Create an OAuth application at <https://cloud.ouraring.com/user/applications>
+and register `http://127.0.0.1:8478/callback` as its redirect URI. Under
+**Connect** → **Oura ring**, enter its client id and secret, then approve the
+requested access in Oura. The refresh token and application credentials go
+into the OS keyring — Credential Manager on Windows, Keychain on macOS,
+Secret Service on Linux — and the database stores only the *name* of the
+keyring entry. Oura retired personal access tokens in December 2025, so Ticker
+uses the supported authorization-code flow. Syncing starts after approval.
 
 | Metric | From |
 |---|---|
@@ -307,13 +309,8 @@ and all-day heart rate, every 15 minutes like Oura. Garmin offers
 individuals no API, so this signs in the way Garmin's own app does, through
 the community [garminconnect](https://github.com/cyberjunky/python-garminconnect)
 library. That makes it unofficial: it can break when Garmin changes its
-login, as it did in March 2026. It needs Python 3.12 or later —
-
-```
-pipx install "ticker[garmin]"
-```
-
-— then **Connect** → **Garmin Connect** on the page, with your Garmin email
+login, as it did in March 2026. Garmin support is included in the normal
+install. Use **Connect** → **Garmin Connect** on the page, with your Garmin email
 and password and, if Garmin asks, the code it sends you. The password is
 used for that one sign-in and never stored; the session goes to the OS
 keyring. On a box with no browser, `python -m ticker.auth.setup add garmin`
@@ -471,6 +468,7 @@ rest, and an environment variable that is set always wins over the page.
 | `TICKER_BUSY_TIMEOUT_MS` | `5000` | How long a database writer waits for another connection's lock |
 | `TICKER_FITBIT_CLIENT_ID` | unset | Your Fitbit application's client id |
 | `TICKER_FITBIT_TZ` | OS timezone | The zone your Fitbit account reports in |
+| `TICKER_OURA_REDIRECT_PORT` | `8478` | Fixed loopback port registered as the Oura OAuth redirect |
 
 The app's server:
 
@@ -506,7 +504,7 @@ Watch over Wi-Fi:
 |---|---|---|
 | `HRM_HTTP_HOST` | `0.0.0.0` | Interface to listen on. The default is what a watch on the LAN needs; `127.0.0.1` only ever hears from this machine |
 | `HRM_HTTP_PORT` | `8476` | Port to listen on |
-| `HRM_HTTP_TOKEN` | unset | Shared secret the watch must send. Unset means anything that can reach the port can post readings — fine on a home LAN, worth setting anywhere else |
+| `HRM_HTTP_TOKEN` | unset | Shared secret the watch must send. When listening on the LAN, Ticker generates a pairing token if this is unset and shows it in the live-source status |
 | `HRM_HTTP_TIMEOUT_SEC` | `15` | Silence before the watch stops counting as connected |
 
 `ticker agent`:
@@ -596,7 +594,8 @@ cd grafana
 $env:TICKER_DB_DIR = "$env:LOCALAPPDATA\Ticker"; docker compose up
 ```
 
-Then <http://localhost:3000> — anonymous, no login. Point `TICKER_DB_DIR` at
+Then <http://localhost:3000> — anonymous Viewer access, bound to loopback so
+it is reachable only from this computer. Point `TICKER_DB_DIR` at
 the directory holding `hrm_data.sqlite3`. It's the directory, not the file:
 SQLite in WAL mode needs its `-wal` and `-shm` siblings, which is also why
 that mount isn't read-only.
@@ -640,9 +639,29 @@ database alone. On Linux, `--appimage-only --version 1.2.3` wraps the folder
 in an AppImage (needs `appimagetool`); on macOS, `--dmg-only` wraps the
 signed bundle in a disk image.
 
-Every release publishes `SHA256SUMS-<platform>.txt`. Released binaries are
-**not currently code signed** — see `packaging/README.md` for what that means
-and what setting it up requires. `pipx install ticker` sidesteps all of it.
+Every release publishes uniquely named archives/installers, a platform
+checksum file and a build manifest containing its version, commit, sizes and
+signing status. The workflow signs Windows and macOS when credentials are
+configured, and can enforce signing with `SIGN_RELEASES=true`. It creates a
+draft only after all three platform builds pass, verifies uploaded sizes, and
+then publishes. `pipx install ticker` remains available for Python users.
+
+### Backup, restore, and updates
+
+The page's **Backup and support** card creates a verified SQLite snapshot,
+checks GitHub for a newer release only when you ask, and downloads diagnostics
+without recordings, credential references, device identifiers, or local file
+paths. The command-line equivalents are:
+
+```
+ticker backup create
+ticker backup create D:\safe\ticker.sqlite3
+ticker backup restore D:\safe\ticker.sqlite3
+```
+
+Stop Ticker before restoring. Restore first preserves the current database as
+a timestamped snapshot. Ticker refuses to open a database created by a newer
+schema, preventing an older binary from silently damaging it.
 
 ### Upgrading from an earlier version
 

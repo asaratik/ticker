@@ -92,6 +92,12 @@ MAX_BODY_BYTES = 16 * 1024 * 1024
 # connection and turns a clean 401 into an unexplained transport error.
 MAX_DRAIN_BYTES = 64 * 1024
 
+# A client that opens a connection and dribbles bytes forever must not pin a
+# worker thread or make the local API unavailable.  The body cap above keeps
+# memory bounded; these two limits keep time and concurrency bounded too.
+REQUEST_TIMEOUT_SEC = 10.0
+MAX_REQUEST_THREADS = 32
+
 # How often the serving loop checks whether it has been asked to stop.
 SHUTDOWN_POLL_SEC = 0.05
 
@@ -125,6 +131,10 @@ class _Handler(BaseHTTPRequestHandler):
 
     server_version = "Ticker"
     protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(REQUEST_TIMEOUT_SEC)
 
     def log_message(self, fmt, *args):
         # The default writes a line per request to stderr, which in a
@@ -180,10 +190,18 @@ class _Handler(BaseHTTPRequestHandler):
             except ValueError:
                 self._send(400, {"ok": False, "error": "bad Content-Length"})
                 return
+            if length < 0:
+                self._send(400, {"ok": False, "error": "bad Content-Length"})
+                return
             if length > MAX_BODY_BYTES:
                 self._send(413, {"ok": False, "error": "body too large"})
                 return
-            body = self._read_body(length)
+            try:
+                body = self._read_body(length)
+            except (TimeoutError, OSError):
+                self._send(408, {"ok": False,
+                                 "error": "request body timed out"})
+                return
 
         if route == MCP_PATH:
             self._serve_mcp(method, body, head_only, params)
@@ -311,9 +329,12 @@ class _Handler(BaseHTTPRequestHandler):
     def _send_raw(self, code: int, headers: dict, body: bytes,
                   head_only: bool = False):
         self._drain_request_body()
+        sent = dict(headers)
+        sent.setdefault("Cache-Control", "no-store")
+        sent.setdefault("X-Content-Type-Options", "nosniff")
         try:
             self.send_response(code)
-            for name, value in headers.items():
+            for name, value in sent.items():
                 self.send_header(name, value)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
@@ -323,6 +344,28 @@ class _Handler(BaseHTTPRequestHandler):
             # The client hung up mid-answer. Normal for a dashboard whose
             # tab was closed; not worth a traceback in the log.
             pass
+
+
+class _BoundedServer(ThreadingHTTPServer):
+    """Threaded server with a hard cap on simultaneous API clients."""
+
+    daemon_threads = True
+
+    def server_bind(self):
+        self._slots = threading.BoundedSemaphore(MAX_REQUEST_THREADS)
+        super().server_bind()
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
 
 
 class ApiServer:
@@ -361,7 +404,7 @@ class ApiServer:
         """Bind and serve. Returns the port actually bound, which is what
         port 0 is for in tests."""
         check_bind(self.host, self.token, self.allow_remote)
-        httpd = ThreadingHTTPServer((self.host, self.port), _Handler)
+        httpd = _BoundedServer((self.host, self.port), _Handler)
         # daemon_threads: a request in flight must not keep the process
         # alive at shutdown. The writer is flushed separately, so nothing
         # durable is lost by cutting a connection.

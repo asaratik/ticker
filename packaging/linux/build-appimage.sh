@@ -26,7 +26,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 DIST="$ROOT/dist"
 SOURCE="$DIST/Ticker"
 APPDIR="$DIST/Ticker.AppDir"
-OUTPUT="$DIST/Ticker-${VERSION}-x86_64.AppImage"
+OUTPUT="$DIST/Ticker-${VERSION}-linux-x86_64.AppImage"
 
 if [ ! -d "$SOURCE" ]; then
     echo "no $SOURCE -- run 'python build.py' first" >&2
