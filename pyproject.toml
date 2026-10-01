@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=84.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -23,15 +23,15 @@ classifiers = [
 # HRM_SOURCE is 'ble' and a default that needs an extra install is a bad
 # default.
 dependencies = [
-    "bleak>=1.0",
-    "tzdata>=2024.1; sys_platform == 'win32'",
+    "bleak>=3.0.2",
+    "tzdata>=2026.4; sys_platform == 'win32'",
     "keyring>=24.0",
     "garminconnect>=0.2.38",
     "curl_cffi>=0.7",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pyinstaller>=6.0", "pyflakes>=3.0"]
+dev = ["pytest>=7.0", "pyinstaller>=6.22.3", "pyflakes>=3.4.0"]
 
 [project.urls]
 Homepage = "https://github.com/ashokaratikatla/ticker"

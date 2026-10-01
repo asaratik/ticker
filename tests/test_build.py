@@ -87,6 +87,7 @@ def test_hashes_only_writes_the_file(tmp_path, monkeypatch):
 
 def test_artifacts_picks_up_the_installer(tmp_path, monkeypatch):
     monkeypatch.setattr(build, "DIST", tmp_path)
+    monkeypatch.setattr(build.sys, "platform", "win32")
     (tmp_path / "Ticker.zip").write_bytes(b"a")
     (tmp_path / "Ticker-1.2.3-windows-x86_64-setup.exe").write_bytes(b"b")
     (tmp_path / "not-a-release-file.txt").write_bytes(b"c")
@@ -99,6 +100,17 @@ def test_artifacts_picks_up_the_installer(tmp_path, monkeypatch):
 
 def test_the_tracked_spec_exists():
     assert SPEC.exists(), "packaging/ticker.spec is what build.py builds from"
+
+
+def test_the_spec_resolves_the_repository_root_from_specpath():
+    """PyInstaller defines SPECPATH as the directory containing the spec.
+
+    Taking two parents points outside the checkout, so the build can pass
+    every unit test and then fail when Analysis cannot find app/main.py.
+    """
+    text = SPEC.read_text(encoding="utf-8")
+    assert "ROOT = os.path.dirname(SPECPATH)" in text
+    assert "os.path.dirname(os.path.dirname(SPECPATH))" not in text
 
 
 def test_build_py_builds_from_the_tracked_spec():
