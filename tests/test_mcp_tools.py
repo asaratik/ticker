@@ -12,6 +12,7 @@ relative windows come out the same on every machine.
 """
 
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -115,6 +116,33 @@ def test_the_database_is_picked_up_once_it_exists(tmp_path):
         tools.call("get_overview", {})
     store.connect(path).close()
     assert "sources" in tools.call("get_overview", {})
+
+
+def test_close_releases_connections_opened_by_other_threads(tmp_path):
+    path = tmp_path / "threaded.sqlite3"
+    store.connect(path).close()
+    readonly = ReadOnlyDatabase(path)
+    opened = []
+
+    def read():
+        with readonly.session() as conn:
+            conn.execute("SELECT 1").fetchone()
+            opened.append(conn)
+
+    thread = threading.Thread(target=read)
+    thread.start()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+    readonly.close()
+    with pytest.raises(sqlite3.ProgrammingError, match="closed"):
+        opened[0].execute("SELECT 1")
+
+    # Closing is reusable and idempotent, as it was when only the current
+    # thread's connection was held.
+    with readonly.session() as conn:
+        assert conn.execute("SELECT 1").fetchone() == (1,)
+    readonly.close()
 
 
 def test_an_old_schema_asks_for_an_upgrade_rather_than_migrating(tmp_path):

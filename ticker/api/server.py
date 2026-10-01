@@ -379,7 +379,7 @@ class ApiServer:
     def __init__(self, api: Api, host: Optional[str] = None,
                  port: Optional[int] = None, token: Optional[str] = None,
                  allow_remote: Optional[bool] = None, mcp=None, ui=None,
-                 allowed_hosts=None, mcp_compact=None):
+                 allowed_hosts=None, mcp_compact=None, close_on_stop=()):
         self.api = api
         # Names besides loopback a token-less server answers to; see
         # TICKER_API_ALLOWED_HOSTS.
@@ -399,6 +399,7 @@ class ApiServer:
                              else allow_remote)
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self._close_on_stop = list(close_on_stop)
 
     def start(self) -> int:
         """Bind and serve. Returns the port actually bound, which is what
@@ -436,6 +437,9 @@ class ApiServer:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
             self._thread = None
+        closeables, self._close_on_stop = self._close_on_stop, []
+        for closeable in closeables:
+            closeable.close()
 
     @property
     def url(self) -> str:
@@ -482,12 +486,16 @@ def build(db_path: Optional[Path] = None, writer=None, on_sync=None,
     store.connect(path).close()          # migrate once, before any reader
     if writer is None:
         writer = store.AsyncStore(path, migrate_first=False)
+    owned_databases = []
     if mcp is None:
-        mcp, _db = build_mcp(path)
+        mcp, db = build_mcp(path)
+        owned_databases.append(db)
     if mcp_compact is None:
-        mcp_compact, _db = build_mcp(path, profile="compact")
+        mcp_compact, db = build_mcp(path, profile="compact")
+        owned_databases.append(db)
     api = Api(thread_local_reader(path), writer, on_sync=on_sync)
-    return ApiServer(api, mcp=mcp, mcp_compact=mcp_compact, ui=ui, **kwargs)
+    return ApiServer(api, mcp=mcp, mcp_compact=mcp_compact, ui=ui,
+                     close_on_stop=owned_databases, **kwargs)
 
 
 def _hostname(host_header: str) -> str:

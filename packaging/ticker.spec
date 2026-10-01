@@ -20,7 +20,7 @@ from PyInstaller.utils.hooks import collect_all
 # SPECPATH points at packaging/ticker.spec; source files live one directory
 # above that. Keeping this explicit prevents a build from accidentally
 # looking for package data under packaging/ticker/.
-ROOT = os.path.dirname(os.path.dirname(SPECPATH))  # noqa: F821
+ROOT = os.path.dirname(SPECPATH)  # noqa: F821
 
 datas = []
 binaries = []

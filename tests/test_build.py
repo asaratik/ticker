@@ -101,6 +101,17 @@ def test_the_tracked_spec_exists():
     assert SPEC.exists(), "packaging/ticker.spec is what build.py builds from"
 
 
+def test_the_spec_resolves_the_repository_root_from_specpath():
+    """PyInstaller defines SPECPATH as the directory containing the spec.
+
+    Taking two parents points outside the checkout, so the build can pass
+    every unit test and then fail when Analysis cannot find app/main.py.
+    """
+    text = SPEC.read_text(encoding="utf-8")
+    assert "ROOT = os.path.dirname(SPECPATH)" in text
+    assert "os.path.dirname(os.path.dirname(SPECPATH))" not in text
+
+
 def test_build_py_builds_from_the_tracked_spec():
     """Passing options on the PyInstaller command line makes it generate and
     overwrite a spec, silently dropping anything added to the old one."""

@@ -173,6 +173,17 @@ def test_the_page_and_its_state_are_served(app):
     assert state["agents"]["http"].endswith(app.url + "/mcp")
 
 
+def test_stopping_releases_the_temporary_database(app):
+    # /ui/state opens the overview database on an HTTP request thread. The
+    # main thread must still be able to close that handle at shutdown; on
+    # Windows an outstanding handle makes the packaged smoke-test fail when
+    # its TemporaryDirectory cleans up.
+    assert call(app.url + "/ui/state")[0] == 200
+    app.runtime.stop()
+    app.path.unlink()
+    assert not app.path.exists()
+
+
 # -- cloud accounts ------------------------------------------------------------
 
 def connect_oura(app):

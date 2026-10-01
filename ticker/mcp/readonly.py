@@ -98,7 +98,11 @@ def open_readonly(path: Path) -> Tuple[sqlite3.Connection, _Clock]:
             "connect a source on its page, or point `ticker mcp` at another "
             "file with --db.".format(path))
     try:
-        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True)
+        # Each connection is still used by only one serving thread. Turning
+        # off SQLite's thread-affinity check lets the owner close all of them
+        # from the main thread after the HTTP server has stopped.
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=rw", uri=True,
+                               check_same_thread=False)
     except sqlite3.Error as exc:
         raise DatabaseUnavailable("cannot open {}: {}".format(path, exc))
     try:
@@ -144,6 +148,9 @@ class ReadOnlyDatabase:
         self.path = Path(path) if path else tconfig.DB_PATH
         self.budget_sec = budget_sec
         self._local = threading.local()
+        self._connections = {}
+        self._connections_lock = threading.Lock()
+        self._generation = 0
 
     @contextmanager
     def session(self, budget_sec: Optional[float] = None
@@ -166,15 +173,27 @@ class ReadOnlyDatabase:
             clock.deadline = None
 
     def close(self) -> None:
-        """Close this thread's connection, if it has one."""
-        held = getattr(self._local, "held", None)
-        if held is not None:
-            held[0].close()
-            self._local.held = None
+        """Close every thread's connection.
+
+        HTTP tool calls open their connection on a request thread, while the
+        runtime is stopped from the main thread. Closing only the caller's
+        thread-local connection leaves the database locked on Windows.
+        """
+        with self._connections_lock:
+            connections = list(self._connections.values())
+            self._connections.clear()
+            self._generation += 1
+        for conn in connections:
+            conn.close()
+        self._local.held = None
 
     def _connection(self) -> Tuple[sqlite3.Connection, _Clock]:
         held = getattr(self._local, "held", None)
-        if held is None:
-            held = open_readonly(self.path)
+        if held is not None and held[0] == self._generation:
+            return held[1]
+        with self._connections_lock:
+            connection = open_readonly(self.path)
+            self._connections[id(connection[0])] = connection[0]
+            held = (self._generation, connection)
             self._local.held = held
-        return held
+        return connection
