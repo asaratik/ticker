@@ -87,6 +87,7 @@ def test_hashes_only_writes_the_file(tmp_path, monkeypatch):
 
 def test_artifacts_picks_up_the_installer(tmp_path, monkeypatch):
     monkeypatch.setattr(build, "DIST", tmp_path)
+    monkeypatch.setattr(build.sys, "platform", "win32")
     (tmp_path / "Ticker.zip").write_bytes(b"a")
     (tmp_path / "Ticker-1.2.3-windows-x86_64-setup.exe").write_bytes(b"b")
     (tmp_path / "not-a-release-file.txt").write_bytes(b"c")
