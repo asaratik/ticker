@@ -6,14 +6,14 @@ Ticker gathers heart rate, HRV, sleep, steps, stress, SpO2, weight and more
 from the devices and apps you already have — a BLE chest strap or Garmin
 watch live; Oura, Fitbit and Garmin Connect through your accounts; Apple
 Health and Garmin from their exports — into one SQLite file on your own
-disk. It shows you what it has on a page in your browser, and serves the
+disk. It shows you what it has in one native desktop window, and serves the
 same data over the [Model Context Protocol](https://modelcontextprotocol.io),
 so Claude Code, Codex, Claude Desktop or any other MCP client — or a model
 you run yourself with Ollama — can answer questions like *"how has my
 resting heart rate moved since I started running?"* or *"do I sleep worse
 after late workouts?"* from your real numbers.
 
-Windows, macOS, Linux. No Ticker account, no Ticker cloud.
+Windows, macOS 13+, Linux. No Ticker account, no Ticker cloud.
 
 ## Getting started
 
@@ -22,43 +22,50 @@ pipx install ticker
 ticker
 ```
 
-That starts Ticker and opens its page at <http://127.0.0.1:8477>. Everything
-happens there:
+That opens Ticker's native desktop window. Its compact toolbar keeps
+Overview, Live recording, History, Connections, Ask, and Settings together:
 
 - **Ask** a question, answered from your own data by a model you run
   yourself (Ollama, LM Studio) — without any of it leaving the machine.
 - **Connect** an Oura ring, Fitbit or Garmin account (sign
-  in), or an Apple Health or Garmin export (give the path).
+  in), or select an Apple Health or Garmin export with the native file picker.
 - **Live heart rate**: turn on a Bluetooth strap or a Garmin watch, watch the
   reading, and start a session to record it.
-- **Ask an agent**: copy one line into Claude Code, Codex or Claude Desktop.
+- **Agent access**: copy the local MCP endpoint from Settings into your client.
 - **What's recorded**: every metric, the dates it covers, and anything that
   needs attention — a sync that's failing, an account that went quiet.
 
 Ticker keeps cloud accounts in sync for as long as it runs. Running `ticker`
-again while it's up just opens the page: one database, one Ticker.
+again while it's up brings the same window forward: one database, one Ticker.
+Closing it asks whether to quit or keep syncing with a tray/menu-bar indicator.
+
+The optional browser interface is still available with `ticker --web` at
+<http://127.0.0.1:8477>. `ticker --headless` runs services without a window.
+For the native implementation, local launch, and validation checklist, see
+[Native desktop](docs/native-desktop.md).
 
 ## One app
 
 ```
 strap or watch (live) ──────┐
-Oura, Fitbit (cloud sync) ──┼─► one writer ─► one SQLite file ─┬─► the page       /
+Oura, Fitbit (cloud sync) ──┼─► one writer ─► one SQLite file ─┬─► native window
 Apple Health (file import) ─┘                                  ├─► read API       /api
                                                                └─► agents (MCP)   /mcp, ticker mcp
 ```
 
 `ticker` is one process that owns all of that: the live source, cloud sync on
-a schedule, imports, the daily rollups, the read API, MCP, and the page. The
+a schedule, imports, the daily rollups, the native window, and read API/MCP. The
 rest of the command line is subcommands of the same thing:
 
 | Command | What it does |
 |---|---|
-| `ticker` | Start Ticker and open its page |
-| `ticker --headless` | Start it without opening a browser — a server, a login item |
+| `ticker` | Start Ticker's native desktop window |
+| `ticker --web` | Use the optional browser interface |
+| `ticker --headless` | Start services without any UI — a server, a login item |
 | `ticker mcp` | MCP over stdio: what an agent launches (`--compact` for small models) |
 | `ticker ask "QUESTION"` | Ask your data from the terminal, answered by a local model |
 | `ticker status` | What's connected and how fresh, in the terminal (`--json` too) |
-| `ticker import FILE` | Import an Apple Health or Garmin export, or a `.fit` file, without the page |
+| `ticker import FILE` | Import an Apple Health or Garmin export, or a `.fit` file, without the UI |
 | `ticker agent` | Stream a strap to a Ticker on another machine |
 | `ticker sync --once` | One cloud sync without the app, for cron |
 | `ticker rollup`, `ticker backfill` | Maintenance |
@@ -98,8 +105,8 @@ data either way (see below). To start it with your session, run
 claude mcp add ticker -- ticker mcp
 ```
 
-Then ask Claude about your sleep. The page's **Ask an agent** card has this
-and the others ready to copy:
+Then ask Claude about your sleep. The native app's Settings offers its HTTP
+MCP endpoint; the optional browser UI also has client configuration examples:
 
 **Claude Code**, in every project rather than just this one:
 `claude mcp add --scope user ticker -- ticker mcp`
@@ -133,7 +140,7 @@ claude mcp add --transport http ticker http://homelab:8477/mcp \
 ```
 
 `ticker mcp` bridges into the running app, so an agent sees exactly what the
-page does. When nothing is running it answers from the database directly,
+app does. When nothing is running it answers from the database directly,
 read-only, so an agent still works before Ticker has ever been started.
 `--server http://homelab:8477` points it at a Ticker elsewhere.
 
@@ -162,19 +169,19 @@ read-only, SQLite refuses writes on that connection, and an authorizer
 allows nothing but reads — no `DELETE`, no `ATTACH`, no state-changing
 `PRAGMA`, whatever SQL the agent sends. Every call has a time limit, so a
 runaway query fails rather than hangs. Connecting accounts stays out of the
-agent's reach on purpose: that happens on the page, and credentials go to the
+agent's reach on purpose: that happens in Connections, and credentials go to the
 OS keyring, never into anything a tool returns.
 
 ## Asking a local model
 
-The **Ask your data** box at the top of the page answers questions with a
+The **Ask** screen answers questions with a
 model you run yourself, so neither the question nor your data leaves the
 machine. Ticker runs the model's tool calls itself, read-only, and lists
 each one under the answer.
 
 1. Install [Ollama](https://ollama.com) and pull a model that can call
    tools: `ollama pull qwen3:14b`, or `llama3.1:8b` on a smaller machine.
-2. Open **Model settings** on the page and pick it. Ollama at
+2. Open **Ask** → **Model settings** and pick it. Ollama at
    `http://127.0.0.1:11434` is the default; for LM Studio, llama.cpp's
    server or vLLM, give their OpenAI-compatible URL, ending in `/v1`.
 
@@ -213,8 +220,9 @@ point it at the compact profile.
 
 ### A strap or a watch, live
 
-On the page, **Live heart rate** → **Bluetooth strap** or **Watch over
-Wi-Fi**. The choice is remembered. It's off by default: Ticker runs all
+Open **Live recording** and select **Bluetooth sensor** or **Watch / HTTP**.
+Use **Choose Bluetooth device** to scan or enter a device address.
+The choice is remembered. It's off by default: Ticker runs all
 day, and a Bluetooth scan running all day with no strap in range drains a
 laptop for nothing.
 
@@ -228,7 +236,7 @@ becomes a heart rate peripheral that this machine connects to.
 
 **Watch over Wi-Fi** takes the machine out of the radio business entirely.
 Ticker listens on a port and a Connect IQ app on the watch posts readings to
-it; the page shows the address to point the watch at. The watch app lives in
+it, by default at `http://THIS_MACHINE:8476/hr`. The watch app lives in
 [`connectiq/`](connectiq/), along with how to build and sideload it. It's
 written but untested on real hardware; the README there says what to check
 first. Anything that can make an HTTP request works just as well, which is
@@ -249,7 +257,7 @@ HRV itself, so any source with RR intervals gets it for free.
 
 Create an OAuth application at <https://cloud.ouraring.com/user/applications>
 and register `http://127.0.0.1:8478/callback` as its redirect URI. Under
-**Connect** → **Oura ring**, enter its client id and secret, then approve the
+**Connections** → **Connect Oura**, enter its client id and secret, then approve the
 requested access in Oura. The refresh token and application credentials go
 into the OS keyring — Credential Manager on Windows, Keychain on macOS,
 Secret Service on Linux — and the database stores only the *name* of the
@@ -270,8 +278,8 @@ Sleep periods also become sessions, next to the ones you record yourself.
 
 Fitbit needs an application of your own: register one at
 <https://dev.fitbit.com>, set `TICKER_FITBIT_CLIENT_ID` (a client id is not
-a secret), and restart Ticker. Then **Connect** → **Fitbit** → **Sign in
-with Fitbit** opens Fitbit's sign-in; approve it and Ticker catches the
+a secret), and restart Ticker. Then **Connections** → **Connect Fitbit**
+opens Fitbit's sign-in; approve it and Ticker catches the
 redirect on a loopback port, exchanges the code with PKCE, and keeps the
 tokens in the keyring. The redirect comes back to the machine Ticker runs
 on, so connect Fitbit from a browser on that machine.
@@ -310,7 +318,7 @@ individuals no API, so this signs in the way Garmin's own app does, through
 the community [garminconnect](https://github.com/cyberjunky/python-garminconnect)
 library. That makes it unofficial: it can break when Garmin changes its
 login, as it did in March 2026. Garmin support is included in the normal
-install. Use **Connect** → **Garmin Connect** on the page, with your Garmin email
+install. Use **Connections** → **Connect Garmin**, with your Garmin email
 and password and, if Garmin asks, the code it sends you. The password is
 used for that one sign-in and never stored; the session goes to the OS
 keyring. On a box with no browser, `python -m ticker.auth.setup add garmin`
@@ -320,7 +328,7 @@ does the same at a terminal.
 data at <https://www.garmin.com/en-US/account/datamanagement/exportdata/>
 and import the zip Garmin emails you — or `.fit` files from the watch's
 `GARMIN` folder, or Garmin Connect's *Export Original* — under **Connect** →
-**Import a file**, or with `ticker import garmin.zip`.
+**Import Apple Health / FIT**, or with `ticker import garmin.zip`.
 
 | From | You get |
 |---|---|
@@ -625,7 +633,7 @@ python build.py
 
 Produces `dist/Ticker` — a folder containing `Ticker.exe` (Windows),
 `Ticker.app` (macOS), or a `Ticker` binary (Linux), with the Python runtime
-beside it. Opening it starts Ticker and opens the page; being a windowed
+beside it. Opening it starts Ticker's native desktop window; being a windowed
 build it has no console, so it logs to `ticker.log` beside the database, and
 agents reach it over HTTP (`claude mcp add --transport http ticker
 http://127.0.0.1:8477/mcp`) rather than through `ticker mcp`.
@@ -648,8 +656,9 @@ then publishes. `pipx install ticker` remains available for Python users.
 
 ### Backup, restore, and updates
 
-The page's **Backup and support** card creates a verified SQLite snapshot,
-checks GitHub for a newer release only when you ask, and downloads diagnostics
+Native **Settings** creates a verified SQLite backup without overwriting
+existing files, and checks for updates only when you ask. The optional browser
+UI's **Backup and support** card additionally downloads diagnostics
 without recordings, credential references, device identifiers, or local file
 paths. The command-line equivalents are:
 
@@ -669,8 +678,8 @@ schema, preventing an older binary from silently damaging it.
 
 | Before | Now |
 |---|---|
-| The Tk window (`ticker`, `python -m ticker.ui.app`) | `ticker` — the page |
-| `ticker-setup add oura` / `add fitbit` | **Connect** on the page |
+| The Tk window (`ticker`, `python -m ticker.ui.app`) | `ticker` — one native window |
+| `ticker-setup add oura` / `add fitbit` | **Connections** in the app |
 | `ticker-import apple_health FILE` | **Connect** → Apple Health, or `ticker import FILE` |
 | `ticker-sync` | Runs inside `ticker`; `ticker sync --once` for cron |
 | `ticker-server` | `ticker --headless` |
@@ -678,7 +687,7 @@ schema, preventing an older binary from silently damaging it.
 | `ticker-agent`, `ticker-rollup`, `ticker-backfill` | `ticker agent`, `ticker rollup`, `ticker backfill` |
 
 Update agent configs that named `ticker-mcp`. The live source is now chosen
-on the page and is off until you choose; `HRM_SOURCE` still pins it. On a
+in Live recording and is off until you choose; `HRM_SOURCE` still pins it. On a
 box with no browser, `python -m ticker.auth.setup add oura` still connects
 an account from a terminal.
 
@@ -692,7 +701,7 @@ whole migration rolls back. The old tables are kept as `sessions_v1` and
 ## How it works
 
 ```
-ticker/app/       the runtime: live source, cloud-sync supervisor, jobs, the page
+ticker/app/       shared runtime, native Qt Widgets, optional browser UI
 ticker/api/       the HTTP server: /api, /mcp, the page's routes
 ticker/mcp/       MCP: protocol, read-only tools, stdio transport
 ticker/ingest/    scheduler, normalizer, importer, derived metrics

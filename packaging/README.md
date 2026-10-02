@@ -213,8 +213,8 @@ technical.
 
 **The packaged builds are the whole app.** PyInstaller follows imports from
 `ticker/app/main.py`, the runtime behind `ticker`, so cloud sync, the live
-source, imports, the read API, MCP and the page all ship together. Opening
-the packaged app starts Ticker and opens its page in the browser; it is a
+source, imports, the read API, MCP and native Qt Widgets all ship together.
+Opening the packaged app starts Ticker's native window; it is a
 windowed build with no console, so it logs to `ticker.log` beside the
 database. The subcommands reach their modules through a dynamic import that
 PyInstaller can't see, which is why the spec lists them as hidden imports.
@@ -223,4 +223,18 @@ One thing a windowed build can't do well is `ticker mcp`: an agent launches
 that over stdin and stdout, which a program with no console does not
 reliably have. Agents reach the packaged app over HTTP instead --
 `claude mcp add --transport http ticker http://127.0.0.1:8477/mcp` -- which
-the page offers ready to copy, or use a `pipx` install's `ticker mcp`.
+Settings offers ready to copy, or use a `pipx` install's `ticker mcp`.
+
+The native UI uses `PySide6-Essentials` (no Qt WebEngine). Qt's packaged license
+metadata, LGPLv3/GPLv3 texts, and native component notice are included by the
+spec. Before a public release, verify the bundled
+Qt/PySide notices and LGPL distribution obligations, and smoke-test native
+startup, tray behavior, Bluetooth permission, and shutdown on each platform.
+The current Qt wheels require macOS 13 or later; the bundle declares that floor.
+
+On Windows, the spec gives System32 priority when resolving dependencies to
+avoid bundling a foreign `icuuc.dll` from tools such as Poppler on PATH. Qt
+expects Windows' ICU API, not a separately built ICU with versioned exports.
+For a local packaging failure, `TICKER_BUILD_CONSOLE=1` produces a diagnostic
+console executable; leave it unset for normal windowed builds. Packaged smoke
+failures write a structured result and exit instead of opening a crash dialog.

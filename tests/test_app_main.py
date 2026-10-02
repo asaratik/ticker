@@ -165,7 +165,7 @@ def test_starting_twice_opens_the_running_one(monkeypatch):
     opened = []
     monkeypatch.setattr(cli, "already_running", lambda url, timeout=1.5: True)
     monkeypatch.setattr(cli, "open_page", lambda url, token=None: opened.append(url))
-    assert cli.main(["--port", "8123"]) == 0
+    assert cli.main(["--web", "--port", "8123"]) == 0
     assert opened == ["http://127.0.0.1:8123"]
     assert cli.main(["--port", "8123", "--headless"]) == 0
     assert len(opened) == 1

@@ -31,7 +31,9 @@ LIVE_SOURCES = ("off", "ble", "http")
 # page lists what that server has and asks.
 DEFAULT_LLM_URL = "http://127.0.0.1:11434"
 DEFAULTS: Dict[str, Any] = {"live_source": "off", "ble_address": "",
-                            "llm_url": DEFAULT_LLM_URL, "llm_model": ""}
+                            "llm_url": DEFAULT_LLM_URL, "llm_model": "",
+                            "desktop_keep_running": False,
+                            "desktop_appearance": "System"}
 
 
 class Settings:
@@ -102,3 +104,12 @@ class Settings:
             scratch.write_text(json.dumps(self._values, indent=2),
                                encoding="utf-8")
             os.replace(scratch, self.path)
+
+    @property
+    def desktop_keep_running(self) -> bool:
+        return self._values.get("desktop_keep_running") is True
+
+    @property
+    def desktop_appearance(self) -> str:
+        value = self._values.get("desktop_appearance")
+        return value if value in ("System", "Light", "Dark") else "System"

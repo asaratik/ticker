@@ -15,16 +15,27 @@
 import os
 import sys
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_all, copy_metadata
 
 # SPECPATH points at packaging/ticker.spec; source files live one directory
 # above that. Keeping this explicit prevents a build from accidentally
 # looking for package data under packaging/ticker/.
 ROOT = os.path.dirname(SPECPATH)  # noqa: F821
 
+if sys.platform == "win32":
+    # Qt uses Windows' unversioned ICU API. Tools such as Poppler can put an
+    # incompatible icuuc.dll earlier on PATH, which dependency analysis then
+    # bundles instead of resolving the OS library. Prefer the system directory;
+    # PyInstaller excludes OS libraries rather than redistributing them.
+    system_directory = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    os.environ["PATH"] = system_directory + os.pathsep + os.environ.get("PATH", "")
+
 datas = []
 binaries = []
 hiddenimports = []
+datas += copy_metadata("PySide6-Essentials")
+datas += copy_metadata("shiboken6")
+datas += [(os.path.join(ROOT, "packaging", "licenses", "*.txt"), "licenses")]
 
 # The migrations and the schema snapshot are read off disk at runtime, so
 # PyInstaller -- which only follows imports -- cannot discover them. Without
@@ -65,8 +76,8 @@ if sys.platform == "win32":
     binaries += win_binaries
     hiddenimports += win_hidden
 
-# The packaged app is the runtime with no terminal: it starts, opens the page
-# in the browser, and logs beside the database (ticker.app.main.gui_main).
+# The packaged app opens native Qt Widgets with no terminal and logs beside
+# the database (ticker.app.main.gui_main). The browser UI remains opt-in.
 a = Analysis(
     [os.path.join(ROOT, "ticker", "app", "main.py")],
     pathex=[ROOT],
@@ -98,7 +109,8 @@ exe = EXE(                                 # noqa: F821
     # AV heuristics dislike. The few megabytes are not worth the false
     # positives (section 12.3).
     upx=False,
-    console=False,
+    # Opt-in console diagnostics for local packaging failures only.
+    console=os.environ.get("TICKER_BUILD_CONSOLE") == "1",
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
@@ -129,7 +141,7 @@ if sys.platform == "darwin":
             # codesign time -- not set up yet, see packaging/README.md.
             "NSBluetoothAlwaysUsageDescription":
                 "Ticker reads heart rate from your Bluetooth chest strap or watch.",
-            "LSMinimumSystemVersion": "11.0",
+            "LSMinimumSystemVersion": "13.0",
             "NSHighResolutionCapable": True,
         },
     )

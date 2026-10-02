@@ -1,0 +1,23 @@
+Ticker native desktop preview
+
+Ticker's application source remains licensed under MIT (see LICENSE).
+
+The native UI uses Qt for Python: PySide6-Essentials and Shiboken6 6.11.2.
+Copyright The Qt Company Ltd. and respective contributors.
+Their package metadata offers LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only.
+The preview uses the LGPLv3 option. Copies of LGPLv3 and the GPLv3 terms
+incorporated by it are included here. Qt libraries are dynamically loaded
+from the onedir bundle, rather than statically linked into Ticker.
+
+Unmodified upstream source and license information:
+https://code.qt.io/cgit/pyside/pyside-setup.git/?h=v6.11.2
+https://code.qt.io/cgit/qt/qtbase.git/?h=v6.11.2
+https://code.qt.io/cgit/qt/qtsvg.git/?h=v6.11.2
+https://www.qt.io/licensing/open-source-lgpl-obligations
+https://www.gnu.org/licenses/lgpl-3.0.html
+
+This is not a complete notice inventory for every bundled dependency.
+Before public distribution, verify Qt's per-module and embedded third-party
+notices, corresponding source access, replacement/relinking requirements,
+and all other dependencies' notices. See docs/native-desktop.md for the
+remaining release checks. Do not treat a local preview as a signed release.
