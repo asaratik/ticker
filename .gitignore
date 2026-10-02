@@ -8,6 +8,10 @@ __pycache__/
 # PyInstaller build output
 build/
 dist/
+# Local native preview builds keep the previous dist/ executable intact.
+build-native/
+dist-native/
+dist-native-debug/
 # Release workflow staging area (downloaded artifacts, never source).
 release-assets/
 # Generated specs are throwaway; packaging/ticker.spec is the real one that

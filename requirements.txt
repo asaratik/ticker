@@ -1,4 +1,6 @@
 bleak>=3.0.2
+# Native desktop widgets; no web engine or Qt add-ons are bundled.
+PySide6-Essentials>=6.11.2,<7
 # TICKER_TZ names an IANA zone, and Windows ships no IANA tz database
 # for zoneinfo to read -- without this, rollup day bucketing silently
 # falls back to the OS zone there.

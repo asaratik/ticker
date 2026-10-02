@@ -1,7 +1,8 @@
 """
 The `ticker` command: the one way in.
 
-    ticker                    start Ticker and open it in your browser
+    ticker                    start the native Ticker desktop app
+    ticker --web              open the optional browser interface
     ticker --headless         start it without opening anything
     ticker mcp                MCP over stdio -- what an agent launches
     ticker ask "QUESTION"     ask your data, answered by a model you run
@@ -83,7 +84,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return status_main(argv[1:])
     if argv and argv[0] == "import":
         return import_main(argv[1:])
-    return run_main(argv)
+    if "--web" in argv or "--headless" in argv:
+        return run_main(argv)
+    from ticker.app.desktop import main as desktop_main
+    return desktop_main(argv[1:] if argv[:1] == ["desktop"] else argv)
 
 
 def gui_main() -> int:
@@ -91,7 +95,8 @@ def gui_main() -> int:
     `ticker-app` launcher. Output goes to a log beside the database, since
     there is nowhere else for it to go -- and in a windowed build printing
     to a missing console would raise instead."""
-    if getattr(sys, "frozen", False) or sys.stdout is None or sys.stderr is None:
+    smoke = sys.argv[1:2] == ["--smoke-test"]
+    if not smoke and (getattr(sys, "frozen", False) or sys.stdout is None or sys.stderr is None):
         log_path = tconfig.DB_PATH.parent / "ticker.log"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         handler = logging.handlers.RotatingFileHandler(
@@ -103,35 +108,25 @@ def gui_main() -> int:
         logging.getLogger().setLevel(logging.INFO)
         # A windowed PyInstaller executable has no console. Keep incidental
         # prints from libraries harmless; Ticker's own messages use logging.
-        if sys.stdout is None or sys.stderr is None:
-            log_file = open(os.devnull, "w", encoding="utf-8")
-            sys.stdout = sys.stderr = log_file
+    if sys.stdout is None or sys.stderr is None:
+        log_file = open(os.devnull, "w", encoding="utf-8")
+        sys.stdout = sys.stderr = log_file
     return main()
 
 
 def smoke_main(argv: List[str]) -> int:
-    """Launch the packaged runtime against throwaway data and prove its UI answers."""
+    """Create the packaged native UI and shared runtime against throwaway data."""
     parser = argparse.ArgumentParser(prog="ticker --smoke-test")
     parser.add_argument("result", type=Path)
     args = parser.parse_args(argv)
-    import tempfile
-    from ticker.app.runtime import Runtime
-    with tempfile.TemporaryDirectory(prefix="ticker-smoke-") as folder:
-        runtime = Runtime(Path(folder) / "ticker.sqlite3", host="127.0.0.1",
-                          port=0, builders={})
-        try:
-            runtime.start()
-            with urllib.request.urlopen(runtime.url + "/ui/state",
-                                        timeout=10) as response:
-                state = json.loads(response.read())
-            if response.status != 200 or "app" not in state:
-                raise RuntimeError("packaged UI did not return application state")
-            args.result.write_text(json.dumps({"ok": True,
-                                               "url": runtime.url}),
-                                   encoding="utf-8")
-        finally:
-            runtime.stop()
-    return 0
+    from ticker.app.desktop import smoke
+    try:
+        return smoke(args.result)
+    except Exception as exc:
+        # A windowed executable's crash dialog can hide a CI failure forever.
+        # Report startup failures without touching the user's data directory.
+        args.result.write_text(json.dumps({"ok": False, "error": str(exc)}), encoding="utf-8")
+        return 1
 
 
 # -- ticker (the app) ------------------------------------------------------
@@ -170,6 +165,7 @@ def run_main(argv: List[str]) -> int:
         epilog=SUBCOMMANDS, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--headless", action="store_true",
                         help="don't open the browser (a server, a login item)")
+    parser.add_argument("--web", action="store_true", help="use the optional browser interface")
     parser.add_argument("--host", default=tconfig.API_HOST)
     parser.add_argument("--port", type=int, default=tconfig.API_PORT)
     parser.add_argument("--token", default=tconfig.API_TOKEN,
