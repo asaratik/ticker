@@ -4,13 +4,14 @@ import os
 import sqlite3
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6.QtWidgets")
-from PySide6.QtCore import QObject, QProcess, Signal, Qt
+from PySide6.QtCore import QObject, QProcess, Signal
 from PySide6.QtGui import QCloseEvent, QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
@@ -84,16 +85,25 @@ def test_latest_measurements_have_real_values_sources_and_dates(data):
     assert display_value(7 * 3600 + 24 * 60, "s") == "7h 24m"
 
 
-def test_trends_never_silently_blend_two_sources(data):
+def test_trends_never_silently_blend_two_sources(data, monkeypatch):
     _, conn, reader = data
+    end = datetime(2026, 10, 1, 12, tzinfo=timezone.utc)
+    monkeypatch.setattr("ticker.app.desktop_data.now_utc", lambda: end)
     one = store.ensure_source(conn, "pull", "oura", "Ring")
     two = store.ensure_source(conn, "pull", "garmin", "Watch")
-    observation(conn, one, "heart_rate_bpm", 60)
-    observation(conn, two, "heart_rate_bpm", 100)
+    # Queries use a half-open window and millisecond timestamps. Samples at
+    # wall-clock "now" can fall exactly on the excluded end on fast runners.
+    instant = end - timedelta(seconds=1)
+    observation(conn, one, "heart_rate_bpm", 60, instant)
+    observation(conn, two, "heart_rate_bpm", 100, instant)
     assert len(reader.sources("heart_rate_bpm")) == 2
     result = reader.series("heart_rate_bpm", one, 7)
     assert result["source"] == "Ring" and result["stats"]["mean"] == 60
+    assert result["stats"]["n"] == 1
     assert chart_points(result)[0][1] == 60
+    other = reader.series("heart_rate_bpm", two, 7)
+    assert other["source"] == "Watch" and other["stats"]["mean"] == 100
+    assert other["stats"]["n"] == 1
 
 
 def test_native_reader_cannot_write_to_health_data(data):

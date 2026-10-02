@@ -208,7 +208,15 @@ def test_sync_now_on_the_read_api_reaches_the_scheduler(app):
     # Before the runtime, this answered 503: nothing in the server process
     # could make a sync happen.
     source_id = connect_oura(app)
-    wait_for(lambda: not app.runtime.pulls.status()[source_id]["syncing"])
+
+    def initial_sync_finished():
+        # The source row is committed before the supervisor registers it.
+        # Wait for a real first fetch and an idle scheduler, not just the row.
+        state = app.runtime.pulls.status().get(source_id)
+        return bool(state and state["running"] and not state["syncing"]
+                    and app.made and app.made[0].fetches)
+
+    wait_for(initial_sync_finished)
     before = len(app.made[0].fetches)
     status, _ = call(app.url + "/api/sync/{}".format(source_id), "POST", {})
     assert status == 202
