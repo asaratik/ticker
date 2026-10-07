@@ -27,7 +27,7 @@ dependencies = [
     "bleak>=3.0.2",
     "tzdata>=2026.4; sys_platform == 'win32'",
     "keyring>=24.0",
-    "garminconnect>=0.2.38",
+    "garminconnect>=0.3.17",
     "curl_cffi>=0.7",
 ]
 
