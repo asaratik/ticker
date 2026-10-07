@@ -9,7 +9,7 @@ tzdata>=2026.4; sys_platform == 'win32'
 # Pull-source tokens live in the OS keyring, never in the database or
 # environment. Optional: without it the BLE and HTTP
 # sources still work and pull sources report themselves unauthenticated.
-keyring>=24.0
+keyring>=25.7.0
 garminconnect>=0.3.17
 curl_cffi>=0.7
 
