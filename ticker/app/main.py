@@ -185,13 +185,14 @@ def run_main(argv: List[str]) -> int:
     # times a day, doesn't pay for the whole app on every start.
     from ticker.api import server as apiserver
     from ticker.app.runtime import Runtime
+    from ticker.db.lock import DatabaseInUse
+    from ticker.db.store import StorageFault
 
     url = page_url(args.host, args.port)
     if already_running(url):
-        log.info("Ticker is already running at %s", url)
-        if not args.headless:
-            open_page(url, args.token)
-        return 0
+        print("another Ticker service is using {}; stop it or choose another port".format(
+            url), file=sys.stderr)
+        return 1
     try:
         apiserver.check_bind(args.host, args.token, args.allow_remote)
     except apiserver.RemoteBindRefused as exc:
@@ -202,6 +203,9 @@ def run_main(argv: List[str]) -> int:
                       allow_remote=args.allow_remote)
     try:
         runtime.start()
+    except DatabaseInUse as exc:
+        print(exc, file=sys.stderr)
+        return 1
     except OSError as exc:
         print("cannot listen on {}:{} - {}".format(args.host, args.port, exc),
               file=sys.stderr)
@@ -222,7 +226,11 @@ def run_main(argv: List[str]) -> int:
         pass
     finally:
         log.info("stopping")
-        runtime.stop()
+        try:
+            runtime.stop()
+        except StorageFault as exc:
+            print(exc, file=sys.stderr)
+            return 1
     return 0
 
 
@@ -450,6 +458,7 @@ def status_main(argv: List[str]) -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
 
+    from ticker.db.lock import in_use
     from ticker.mcp.readonly import ReadOnlyDatabase
     from ticker.mcp.tools import ToolError, Tools
 
@@ -461,16 +470,20 @@ def status_main(argv: List[str]) -> int:
         return 1
     finally:
         readonly.close()
+    # Whether something owns the database -- the lock, not the HTTP port,
+    # which a runtime may not open and something else may hold.
+    running = in_use(readonly.path)
     url = page_url(tconfig.API_HOST, tconfig.API_PORT)
-    running = already_running(url)
+    served = running and already_running(url)
 
     if args.json:
         print(json.dumps(dict(overview, running=running,
-                              url=url if running else None), indent=2))
+                              url=url if served else None), indent=2))
         return 0
 
     # ASCII only: a Windows console on a legacy code page can't print a tick.
-    print("Ticker is running at {}".format(url) if running
+    print("Ticker is running at {}".format(url) if served
+          else "Ticker is running" if running
           else "Ticker is not running -- start it with `ticker`")
     print("Data     {}".format(readonly.path))
     print("\nSources")

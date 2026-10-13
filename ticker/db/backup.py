@@ -11,6 +11,7 @@ from typing import Optional
 
 from ticker import config as tconfig
 from ticker.db import migrate
+from ticker.db.lock import DatabaseInUse, DatabaseLock
 
 
 def _stamp() -> str:
@@ -89,9 +90,12 @@ def main(argv=None) -> int:
         else:
             if args.path is None:
                 parser.error("restore needs the backup file")
-            restore(args.path, args.db)
+            # Exclusive ownership: replacing the file under a running
+            # writer would lose its data and corrupt what it writes next.
+            with DatabaseLock(args.db):
+                restore(args.path, args.db)
             print("restored {} from {}".format(args.db, args.path))
-    except (OSError, sqlite3.Error, ValueError) as exc:
+    except (OSError, sqlite3.Error, ValueError, DatabaseInUse) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     return 0

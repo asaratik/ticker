@@ -29,6 +29,7 @@ from typing import Optional
 from ticker import config as tconfig
 from ticker.auth import secrets
 from ticker.db import store
+from ticker.db.lock import DatabaseInUse, DatabaseLock
 from ticker.sources.base import SourceError
 
 # Vendors this can configure: kind, default display name, auth style.
@@ -104,15 +105,16 @@ def add_oauth(conn, vendor: str, display_name: str,
         # Oura application before connecting.
         receiver = oauth.LoopbackReceiver(port=tconfig.OURA_REDIRECT_PORT)
         state = oauth.generate_state()
+        verifier = oauth.generate_verifier()
         url = oauth.build_authorization_url(
             oura.AUTHORIZE_URL, client_id, receiver.redirect_uri,
-            oura.SCOPES, state, None)
+            oura.SCOPES, state, oauth.challenge_for(verifier))
         try:
             receiver.start()
             (open_browser or _open_browser)(url)
             code = receiver.wait(state)
             tokens = oauth.exchange_code(
-                oura.TOKEN_URL, client_id, code, None, receiver.redirect_uri,
+                oura.TOKEN_URL, client_id, code, verifier, receiver.redirect_uri,
                 client_secret=client_secret, secret_in_body=True)
             tokens.extra.update(oauth_client_id=client_id,
                                 oauth_client_secret=client_secret)
@@ -205,11 +207,21 @@ def main(argv=None) -> int:
     sub.add_parser("list", help="show configured sources")
 
     args = parser.parse_args(sys.argv[1:] if argv is None else argv)
-    conn = store.connect(args.db or tconfig.DB_PATH)
+    db_path = args.db or tconfig.DB_PATH
     try:
-        return _dispatch(conn, args)
+        lock = DatabaseLock(db_path).require()
+    except DatabaseInUse as exc:
+        print("{} Connect accounts from the app while it runs.".format(exc),
+              file=sys.stderr)
+        return 1
+    try:
+        conn = store.connect(db_path)
+        try:
+            return _dispatch(conn, args)
+        finally:
+            conn.close()
     finally:
-        conn.close()
+        lock.release()
 
 
 def _dispatch(conn, args) -> int:
@@ -261,8 +273,7 @@ def _dispatch(conn, args) -> int:
             return 1
         print("configured {} as source #{} ({!r})".format(
             args.vendor, source_id, name))
-        print("start Ticker (`ticker`) to begin syncing; if it is already "
-              "running it picks this up within a minute")
+        print("start Ticker (`ticker`) to begin syncing")
         return 0
 
     if remove(conn, args.vendor, name):

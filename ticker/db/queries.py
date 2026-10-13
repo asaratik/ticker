@@ -149,6 +149,25 @@ def rebuild_days(conn: sqlite3.Connection,
     return written
 
 
+def local_dirty_days(markers: Iterable[Tuple[int, int, str]],
+                     zone: Optional[tzinfo] = None) -> Set[Tuple[int, str]]:
+    """(metric_id, local day) pairs to rebuild for rollup_dirty markers.
+
+    A marker names a UTC date. In any zone that date overlaps one or two
+    local days, and both are rebuilt: a superset costs a recompute, a subset
+    would leave a rollup wrong.
+    """
+    zone = zone or tconfig.local_zone()
+    days: Set[Tuple[int, str]] = set()
+    for _source_id, metric_id_, utc_day in markers:
+        start = datetime.combine(date.fromisoformat(utc_day), time(0, 0),
+                                 tzinfo=timezone.utc)
+        last = start + timedelta(days=1) - timedelta(microseconds=1)
+        days.add((metric_id_, tconfig.local_day(start, zone)))
+        days.add((metric_id_, tconfig.local_day(last, zone)))
+    return days
+
+
 def all_days(conn: sqlite3.Connection, metric_id_: Optional[int] = None,
              zone: Optional[tzinfo] = None) -> Set[Tuple[int, str]]:
     """Every (metric_id, day) that has observations. For a first build or a
@@ -387,11 +406,12 @@ def sync_state(conn: sqlite3.Connection, source_id: int) -> Dict[str, dict]:
     """Per-metric watermarks for one source, keyed by metric name."""
     rows = conn.execute(
         "SELECT m.name, s.cursor, s.watermark_ts, s.last_attempt, s.last_success, "
-        "       s.last_error "
+        "       s.last_error, s.backfill_done "
         "FROM sync_state s JOIN metrics m ON m.id = s.metric_id "
         "WHERE s.source_id = ?", (source_id,)).fetchall()
     return {
         r[0]: {"cursor": r[1], "watermark_ts": r[2], "last_attempt": r[3],
-               "last_success": r[4], "last_error": r[5]}
+               "last_success": r[4], "last_error": r[5],
+               "backfill_done": bool(r[6])}
         for r in rows
     }

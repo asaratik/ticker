@@ -114,6 +114,7 @@ exe = EXE(                                 # noqa: F821
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,
+    icon=os.path.join(ROOT, "packaging", "windows", "ticker.ico") if sys.platform == "win32" else None,
     codesign_identity=None,
     entitlements_file=None,
 )
@@ -132,7 +133,7 @@ if sys.platform == "darwin":
     app = BUNDLE(                          # noqa: F821
         coll,
         name="Ticker.app",
-        icon=None,
+        icon=os.path.join(ROOT, "packaging", "macos", "ticker.icns"),
         bundle_identifier="com.ticker.app",
         info_plist={
             # Without this key macOS refuses Bluetooth outright, signed or

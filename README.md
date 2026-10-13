@@ -258,7 +258,9 @@ HRV itself, so any source with RR intervals gets it for free.
 Create an OAuth application at <https://cloud.ouraring.com/user/applications>
 and register `http://127.0.0.1:8478/callback` as its redirect URI. Under
 **Connections** → **Connect Oura**, enter its client id and secret, then approve the
-requested access in Oura. The refresh token and application credentials go
+requested access on Oura's website in your browser. These are credentials
+from your own API application, not your Oura account password. Ticker uses
+PKCE to protect the browser redirect. The refresh token and application credentials go
 into the OS keyring — Credential Manager on Windows, Keychain on macOS,
 Secret Service on Linux — and the database stores only the *name* of the
 keyring entry. Oura retired personal access tokens in December 2025, so Ticker
@@ -313,16 +315,17 @@ app over Wi-Fi.
 
 **Garmin Connect sign-in**, for everything the watch syncs to Garmin: sleep,
 HRV, resting heart rate, stress, Body Battery, steps, SpO2, breathing rate
-and all-day heart rate, every 15 minutes like Oura. Garmin offers
-individuals no API, so this signs in the way Garmin's own app does, through
-the community [garminconnect](https://github.com/cyberjunky/python-garminconnect)
-library. That makes it unofficial: it can break when Garmin changes its
-login, as it did in March 2026. Garmin support is included in the normal
-install. Use **Connections** → **Connect Garmin**, with your Garmin email
-and password and, if Garmin asks, the code it sends you. The password is
-used for that one sign-in and never stored; the session goes to the OS
-keyring. On a box with no browser, `python -m ticker.auth.setup add garmin`
-does the same at a terminal.
+and all-day heart rate, every 15 minutes like Oura. Garmin's official
+browser-based OAuth is available through its business-only Developer Program;
+Ticker's personal connector cannot use it. The optional sign-in here is
+**unofficial**: it sends your Garmin email, password and any verification code
+to Garmin through the community
+[garminconnect](https://github.com/cyberjunky/python-garminconnect) library.
+It can break when Garmin changes its login. Ticker uses the password for that
+sign-in only and stores the resulting session, not the password, in the OS
+keyring. If you do not want to enter a password in Ticker, use Garmin's data
+export instead. On a box with no browser, `python -m ticker.auth.setup add
+garmin` offers the same unofficial sign-in at a terminal.
 
 **Garmin's files**, official, and immune to login changes: request your
 data at <https://www.garmin.com/en-US/account/datamanagement/exportdata/>

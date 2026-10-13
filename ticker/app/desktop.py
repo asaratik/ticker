@@ -10,6 +10,21 @@ import tempfile
 from pathlib import Path
 
 from ticker import config as tconfig
+from ticker.db.lock import DatabaseLock
+
+APP_USER_MODEL_ID = "turbobunny.Ticker"
+
+
+def set_windows_taskbar_identity():
+    if sys.platform != "win32":
+        return
+    from ctypes import WinDLL, c_long, c_wchar_p
+    setter = WinDLL("shell32").SetCurrentProcessExplicitAppUserModelID
+    setter.argtypes = [c_wchar_p]
+    setter.restype = c_long
+    result = setter(APP_USER_MODEL_ID)
+    if result != 0:
+        logging.warning("Could not set Ticker taskbar identity: HRESULT 0x%08x", result & 0xFFFFFFFF)
 
 
 def main(argv=None):
@@ -32,13 +47,16 @@ def main(argv=None):
         print(exc, file=sys.stderr)
         return 2
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO)
+    set_windows_taskbar_identity()
+    from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication, QMessageBox
     from ticker.app.desktop_backend import Controller
-    from ticker.app.desktop_window import Window
+    from ticker.app.desktop_window import ICON_PATH, Window
     from ticker.app.runtime import Runtime
     app = QApplication.instance() or QApplication([sys.argv[0]])
     app.setApplicationName("Ticker")
     app.setOrganizationName("Ticker")
+    app.setWindowIcon(QIcon(str(ICON_PATH)))
     app.setQuitOnLastWindowClosed(False)
     guard = Instance(args.db)
     try:
@@ -46,7 +64,8 @@ def main(argv=None):
             if guard.activate_existing():
                 return 0
             QMessageBox.information(None, "Ticker is already running",
-                "Ticker is starting or already running for this data file. Try reopening it shortly.")
+                "Ticker is already running for this data file, or a Ticker command (import, "
+                "sync, restore) is using it. Try again when it finishes.")
             return 1
     except OSError as exc:
         QMessageBox.critical(None, "Cannot start Ticker", str(exc))
@@ -58,7 +77,7 @@ def main(argv=None):
             if already_running(page_url(args.host, args.port)):
                 raise RuntimeError("Another Ticker service is using this port. Stop its browser/headless instance before starting the native app.")
         return Runtime(args.db, host=args.host, port=args.port, token=args.token,
-                       allow_remote=args.allow_remote)
+                       allow_remote=args.allow_remote, lock=guard.lock)
 
     controller = Controller(factory)
     window = Window(controller)
@@ -85,21 +104,22 @@ def main(argv=None):
 
 
 class Instance:
-    """A per-database lock plus current-user-only local activation IPC.
+    """The shared per-database lock plus current-user-only local activation IPC.
 
-    The lock is necessary on Windows, where multiple named-pipe servers can
-    otherwise listen on the same name. Stale IPC is removed only while this
-    process owns the lock. No health data or credentials travel over IPC.
+    The lock is the same OS lock every writable entry point takes
+    (ticker.db.lock), so a browser/headless runtime or a terminal import on
+    this database also counts as "already running". It is also what makes
+    the IPC safe on Windows, where multiple named-pipe servers can otherwise
+    listen on the same name: stale IPC is removed only while this process
+    owns the lock. No health data or credentials travel over IPC.
     """
     def __init__(self, path):
-        from PySide6.QtCore import QLockFile
         from PySide6.QtNetwork import QLocalServer
         path = Path(path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(os.path.normcase(str(path)).encode()).hexdigest()[:24]
         self.name = "ticker-desktop-" + digest
-        self.lock = QLockFile(str(path.parent / (self.name + ".lock")))
-        self.lock.setStaleLockTime(0)
+        self.lock = DatabaseLock(path)
         self.server = QLocalServer()
         self.server.setSocketOptions(QLocalServer.SocketOption.UserAccessOption)
         self.clients = []
@@ -107,7 +127,7 @@ class Instance:
 
     def acquire(self):
         from PySide6.QtNetwork import QLocalServer
-        if not self.lock.tryLock(0):
+        if not self.lock.acquire():
             return False
         self.owned = True
         if not self.server.listen(self.name):
@@ -161,7 +181,7 @@ class Instance:
         for client in list(self.clients):
             client.abort()
         if self.owned:
-            self.lock.unlock()
+            self.lock.release()
             self.owned = False
 
 

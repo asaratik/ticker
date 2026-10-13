@@ -56,6 +56,13 @@ CREATE TABLE raw_payloads (
     body        BLOB NOT NULL                 -- gzipped JSON
 );
 
+CREATE TABLE rollup_dirty (
+    source_id  INTEGER NOT NULL,
+    metric_id  INTEGER NOT NULL,
+    utc_day    TEXT    NOT NULL,              -- 'YYYY-MM-DD' of observations.ts
+    PRIMARY KEY (source_id, metric_id, utc_day)
+) WITHOUT ROWID;
+
 CREATE TABLE rollups_daily (
     metric_id   INTEGER NOT NULL REFERENCES metrics(id),
     day         TEXT    NOT NULL,             -- 'YYYY-MM-DD' in local tz
@@ -119,8 +126,13 @@ CREATE TABLE sync_state (
     watermark_ts   TEXT,                      -- fetched cleanly up to here
     last_attempt   TEXT,
     last_success   TEXT,
-    last_error     TEXT,
+    last_error     TEXT, backfill_done INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (source_id, metric_id)
+);
+
+CREATE TABLE writer_probe (
+    id  INTEGER PRIMARY KEY CHECK (id = 1),
+    at  TEXT NOT NULL
 );
 
 CREATE INDEX idx_obs_metric_ts ON observations (metric_id, ts);
@@ -130,6 +142,41 @@ CREATE INDEX idx_obs_session   ON observations (session_id) WHERE session_id IS 
 CREATE INDEX idx_raw_source_time ON raw_payloads (source_id, fetched_at);
 
 CREATE INDEX idx_samples_v1_session ON samples_v1(session_id);
+
+CREATE TRIGGER observations_dirty_delete AFTER DELETE ON observations
+BEGIN
+    INSERT INTO rollup_dirty (source_id, metric_id, utc_day)
+    SELECT OLD.source_id, OLD.metric_id, substr(OLD.ts, 1, 10)
+    WHERE NOT EXISTS (SELECT 1 FROM rollup_dirty
+                      WHERE source_id = OLD.source_id AND metric_id = OLD.metric_id
+                        AND utc_day = substr(OLD.ts, 1, 10));
+END;
+
+CREATE TRIGGER observations_dirty_insert AFTER INSERT ON observations
+BEGIN
+    INSERT INTO rollup_dirty (source_id, metric_id, utc_day)
+    SELECT NEW.source_id, NEW.metric_id, substr(NEW.ts, 1, 10)
+    WHERE NOT EXISTS (SELECT 1 FROM rollup_dirty
+                      WHERE source_id = NEW.source_id AND metric_id = NEW.metric_id
+                        AND utc_day = substr(NEW.ts, 1, 10));
+END;
+
+CREATE TRIGGER observations_dirty_update AFTER UPDATE ON observations
+WHEN OLD.value IS NOT NEW.value OR OLD.ts IS NOT NEW.ts
+  OR OLD.end_ts IS NOT NEW.end_ts OR OLD.text_value IS NOT NEW.text_value
+  OR OLD.metric_id IS NOT NEW.metric_id OR OLD.source_id IS NOT NEW.source_id
+BEGIN
+    INSERT INTO rollup_dirty (source_id, metric_id, utc_day)
+    SELECT OLD.source_id, OLD.metric_id, substr(OLD.ts, 1, 10)
+    WHERE NOT EXISTS (SELECT 1 FROM rollup_dirty
+                      WHERE source_id = OLD.source_id AND metric_id = OLD.metric_id
+                        AND utc_day = substr(OLD.ts, 1, 10));
+    INSERT INTO rollup_dirty (source_id, metric_id, utc_day)
+    SELECT NEW.source_id, NEW.metric_id, substr(NEW.ts, 1, 10)
+    WHERE NOT EXISTS (SELECT 1 FROM rollup_dirty
+                      WHERE source_id = NEW.source_id AND metric_id = NEW.metric_id
+                        AND utc_day = substr(NEW.ts, 1, 10));
+END;
 
 CREATE UNIQUE INDEX ux_obs_natural
     ON observations (source_id, metric_id, ts, external_id);

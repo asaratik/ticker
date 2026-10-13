@@ -1,0 +1,51 @@
+{
+  "hardware": {
+    "platform": "Windows-11-10.0.26220-SP0",
+    "machine": "AMD64",
+    "processor": "AMD64 Family 26 Model 36 Stepping 0, AuthenticAMD",
+    "cpus": 24,
+    "python": "3.13.12"
+  },
+  "quick": false,
+  "measured_at": "2026-10-13T03:22:37+00:00",
+  "store_insert": {
+    "rows": 200000,
+    "seconds": 1.405,
+    "rows_per_sec": 142382
+  },
+  "flush_latency": {
+    "rounds": 20,
+    "rows_per_round": 50,
+    "median_ms": 0.44,
+    "max_ms": 6.38
+  },
+  "import": {
+    "records": 100000,
+    "accepted": 100000,
+    "parse_and_enqueue_sec": 2.234,
+    "committed_sec": 2.234,
+    "committed_with_rollups_sec": 2.281,
+    "records_per_sec": 44757
+  },
+  "sync_backfill": {
+    "windows": 88,
+    "rows": 210240,
+    "seconds": 1.744,
+    "rows_per_sec": 120560,
+    "backfill_done": true
+  },
+  "reporting": {
+    "observations": 527060,
+    "fixture_sec": 16.02,
+    "runtime_start_sec": 0.056,
+    "runtime_stop_sec": 0.054,
+    "overview_state_median_ms": 1.27,
+    "latest_cards_median_ms": 0.02,
+    "series_median_ms": {
+      "7d": 5.06,
+      "30d": 33.91,
+      "90d": 98.63
+    },
+    "backup_create_sec": 0.447
+  }
+}

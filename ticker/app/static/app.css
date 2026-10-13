@@ -76,7 +76,7 @@ code, pre { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; fo
   position: sticky; top: 0; z-index: 2;
 }
 .brand { font-weight: 700; font-size: 16px; display: flex; align-items: center; gap: 8px; }
-.brand-mark { color: var(--critical); }
+.brand-icon { width: 24px; height: 24px; }
 .bar-status { flex: 1; color: var(--ink-2); font-size: 13px; min-width: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

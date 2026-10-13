@@ -39,6 +39,7 @@ from ticker.app import support
 from ticker.app.web import AppError, Ui
 from ticker.auth import secrets, setup
 from ticker.db import store
+from ticker.db.lock import DatabaseLock
 from ticker.ingest import importer
 from ticker.mcp.protocol import package_version
 from ticker.mcp.server import build as build_mcp
@@ -68,7 +69,7 @@ class Job:
     id: str
     kind: str                      # 'import' | 'fitbit'
     title: str
-    status: str = "running"        # running | done | failed
+    status: str = "running"        # running | done | failed | canceled
     detail: Optional[str] = None
     progress: Optional[int] = None
     started: str = dataclasses.field(default_factory=now_iso)
@@ -105,8 +106,13 @@ class Runtime:
                  token: Optional[str] = None,
                  allow_remote: Optional[bool] = None,
                  builders=None, pull_interval: Optional[float] = None,
-                 make_source: Optional[Callable] = None):
+                 make_source: Optional[Callable] = None,
+                 lock: Optional[DatabaseLock] = None):
         self.db_path = Path(db_path) if db_path else tconfig.DB_PATH
+        # The desktop takes the database lock before its window exists and
+        # hands it on; every other caller lets start() take it.
+        self._lock = lock
+        self._owns_lock = False
         self.settings = Settings.beside(self.db_path)
         self._server_options = {"host": host, "port": port, "token": token,
                                 "allow_remote": allow_remote}
@@ -122,6 +128,8 @@ class Runtime:
         self._ask_ids = itertools.count(1)
         self._garmin_codes: Dict[str, Tuple[Dict[str, str], threading.Event]] = {}
         self._garmin_library = None        # tests hand in a stand-in
+        self._import: Optional[threading.Thread] = None
+        self._import_cancel = threading.Event()
         self.writer = None
         self.pulls: Optional[PullSupervisor] = None
         self.live: Optional[LiveMonitor] = None
@@ -133,8 +141,19 @@ class Runtime:
     # -- lifecycle -------------------------------------------------------
 
     def start(self) -> "Runtime":
-        # Migrate once, before any reader or writer touches the file.
-        store.connect(self.db_path).close()
+        # Own the database before migrating or writing: a second runtime,
+        # or a terminal import, on the same file is refused here.
+        if self._lock is None:
+            self._lock = DatabaseLock(self.db_path).require()
+            self._owns_lock = True
+        elif not self._lock.held:
+            self._lock.require()
+        try:
+            # Migrate once, before any reader or writer touches the file.
+            store.connect(self.db_path).close()
+        except Exception:
+            self._release_lock()
+            raise
         self.writer = store.AsyncStore(self.db_path, migrate_first=False)
         try:
             pull_options: Dict[str, Any] = {"builders": self._builders}
@@ -183,24 +202,44 @@ class Runtime:
 
     def stop(self) -> None:
         """Take everything down in the order that loses nothing: no new
-        requests, then end the session, then stop syncing, then commit and
-        bring the rollups up to date."""
+        requests, then end the session, then stop an import where it stands,
+        then stop syncing, then commit and bring the rollups up to date.
+
+        Raises store.StorageFault, after everything is down, if queued data
+        could not be saved -- shutdown never reports a save it didn't make."""
         if self.server is not None:
             self.server.stop()
             self.server = None
         if self.live is not None:
             self.live.close()
             self.live = None
+        self._import_cancel.set()
+        if self._import is not None:
+            # Everything the import admitted is written; it reports itself
+            # canceled, and re-importing the file fills in the rest.
+            self._import.join()
+            self._import = None
         if self.pulls is not None:
             self.pulls.stop()
             self.pulls = None
+        saved, fault = True, None
         if self.writer is not None:
             self.writer.rebuild_rollups()
-            self.writer.close()
+            saved = self.writer.close()
+            fault = self.writer.fault
             self.writer = None
         if self._readonly is not None:
             self._readonly.close()
             self._readonly = None
+        self._release_lock()
+        if not saved:
+            raise store.StorageFault(fault or "not all data could be saved before stopping")
+
+    def _release_lock(self) -> None:
+        if self._owns_lock and self._lock is not None:
+            self._lock.release()
+            self._lock = None
+            self._owns_lock = False
 
     # -- what the page shows ---------------------------------------------
 
@@ -227,6 +266,9 @@ class Runtime:
                     "started": self.started_at, "url": url,
                     "timezone": overview.get("timezone"),
                     "problem": problem},
+            # App-level, not per source: a storage fault stops every source.
+            "storage": {"fault": self.writer.fault if self.writer else None,
+                        "dropped": self.writer.dropped if self.writer else 0},
             "sources": sources,
             "metrics": overview.get("metrics", []),
             "sessions": overview.get("sessions", {}),
@@ -251,6 +293,12 @@ class Runtime:
 
     # -- what the page can do --------------------------------------------
 
+    def retry_storage(self) -> Dict[str, Any]:
+        """The Retry storage action: clears a storage fault only once a real
+        write commits again."""
+        ok = self.writer.retry()
+        return {"ok": ok, "fault": self.writer.fault}
+
     def sync_now(self, source_id: int) -> Dict[str, Any]:
         queued = self.pulls.request_sync(source_id)
         return {"source_id": source_id, "queued": queued,
@@ -265,6 +313,7 @@ class Runtime:
         token = (token or "").strip()
         if not token:
             raise AppError(400, "paste the access token first")
+        self._require_storage()
         self._require_keyring()
         name = (name or "").strip() or setup.VENDORS[vendor][1]
         conn = store.connect(self.db_path, migrate_first=False)
@@ -287,6 +336,7 @@ class Runtime:
         if not client_id or not client_secret:
             raise AppError(400, "enter the client id and client secret from "
                                    "your Oura application")
+        self._require_storage()
         self._require_keyring()
         name = (name or "").strip() or setup.VENDORS["oura"][1]
         job = self._job("oura", "Connecting Oura ({})".format(name))
@@ -298,8 +348,9 @@ class Runtime:
             opened.set()
 
         def work() -> None:
-            conn = store.connect(self.db_path, migrate_first=False)
+            conn = None
             try:
+                conn = store.connect(self.db_path, migrate_first=False)
                 source_id = setup.add_oauth(
                     conn, "oura", name, open_browser=open_browser,
                     client_id=client_id, client_secret=client_secret)
@@ -308,7 +359,8 @@ class Runtime:
             except Exception as exc:
                 job.finish("failed", str(exc))
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
                 opened.set()
 
         threading.Thread(target=work, name="ticker-oura-signin",
@@ -329,6 +381,7 @@ class Runtime:
             raise AppError(400, "Fitbit needs an application client id first: "
                                 "register one at dev.fitbit.com, set "
                                 "TICKER_FITBIT_CLIENT_ID and restart Ticker")
+        self._require_storage()
         self._require_keyring()
         name = (name or "").strip() or setup.VENDORS["fitbit"][1]
         job = self._job("fitbit", "Connecting Fitbit ({})".format(name))
@@ -340,8 +393,9 @@ class Runtime:
             opened.set()
 
         def work() -> None:
-            conn = store.connect(self.db_path, migrate_first=False)
+            conn = None
             try:
+                conn = store.connect(self.db_path, migrate_first=False)
                 source_id = setup.add_oauth(conn, "fitbit", name,
                                             open_browser=open_browser)
                 self.pulls.restart(source_id)
@@ -349,7 +403,8 @@ class Runtime:
             except Exception as exc:
                 job.finish("failed", str(exc))
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
                 opened.set()
 
         threading.Thread(target=work, name="ticker-fitbit-signin",
@@ -370,6 +425,7 @@ class Runtime:
         why = garmin.available(self._garmin_library)
         if why:
             raise AppError(501, why)
+        self._require_storage()
         self._require_keyring()
         email = (email or "").strip()
         if not email or not password:
@@ -389,8 +445,9 @@ class Runtime:
             return code["code"]
 
         def work() -> None:
-            conn = store.connect(self.db_path, migrate_first=False)
+            conn = None
             try:
+                conn = store.connect(self.db_path, migrate_first=False)
                 source_id = setup.add_password(conn, "garmin", name, email, password,
                                                prompt_mfa, library=self._garmin_library)
                 self.pulls.restart(source_id)
@@ -398,7 +455,8 @@ class Runtime:
             except Exception as exc:
                 job.finish("failed", str(exc))
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
                 self._garmin_codes.pop(job.id, None)
                 settled.set()
 
@@ -433,26 +491,39 @@ class Runtime:
             vendor = importer.detect(file)
         except PermanentError as exc:
             raise AppError(400, str(exc))
+        self._require_storage()
+        if self._import is not None and self._import.is_alive():
+            # One at a time: imports share one bounded slice of the writer.
+            raise AppError(409, "an import is already running; wait for it to finish")
         job = self._job("import", "Importing {}".format(file.name))
 
         def progress(count: int) -> None:
             job.progress = count
 
         def work() -> None:
-            conn = store.connect(self.db_path, migrate_first=False)
+            conn = None
             try:
+                conn = store.connect(self.db_path, migrate_first=False)
+                # Returns only once every row is committed, so "done" means
+                # saved, not handed to the writer.
                 summary = importer.run_import(conn, self.writer, vendor,
                                               file, display_name=name or "",
-                                              progress=progress)
+                                              progress=progress,
+                                              cancel=self._import_cancel)
                 self.writer.rebuild_rollups()
                 job.finish("done", summary["detail"])
+            except store.ImportCancelled:
+                job.finish("canceled", "stopped before the end of the file; "
+                                       "import it again to finish")
             except Exception as exc:
                 log.exception("import of %s failed", file)
                 job.finish("failed", str(exc))
             finally:
-                conn.close()
+                if conn is not None:
+                    conn.close()
 
-        threading.Thread(target=work, name="ticker-import", daemon=True).start()
+        self._import = threading.Thread(target=work, name="ticker-import", daemon=True)
+        self._import.start()
         return {"job_id": job.id}
 
     def pick_import(self) -> Dict[str, Any]:
@@ -483,6 +554,7 @@ class Runtime:
     def disconnect(self, source_id: int) -> Dict[str, Any]:
         """Forget a cloud account's credentials and stop syncing it. Its
         data stays -- deleting the row would cascade and take it."""
+        self._require_storage()
         conn = store.connect(self.db_path, migrate_first=False)
         try:
             row = conn.execute(
@@ -585,6 +657,13 @@ class Runtime:
         return snapshot
 
     # -- plumbing --------------------------------------------------------
+
+    def _require_storage(self) -> None:
+        """Refuse writes through separate connections while the writer has
+        a storage fault: they would fail the same way, or half-work."""
+        fault = self.writer.fault if self.writer is not None else None
+        if fault:
+            raise AppError(503, fault)
 
     @staticmethod
     def _require_keyring() -> None:

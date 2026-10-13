@@ -36,6 +36,7 @@ OutputBaseFilename=Ticker-{#AppVersion}-windows-x86_64-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=ticker.ico
 ; The uninstaller ends up in Add/Remove Programs, which is a large part of
 ; why an installer beats a zip for anyone who isn't a developer.
 UninstallDisplayName={#AppName}
@@ -57,9 +58,10 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; \
     Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
-Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
+    AppUserModelID: "turbobunny.Ticker"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; \
-    Tasks: desktopicon
+    AppUserModelID: "turbobunny.Ticker"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExeName}"; \

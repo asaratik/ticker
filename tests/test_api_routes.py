@@ -37,6 +37,9 @@ class FakeWriter:
     def end_session(self, source_id, key, end_ts=None):
         self.ended.append((source_id, key))
 
+    def flush(self, timeout=10.0):
+        return True
+
 
 @pytest.fixture
 def db(tmp_path):
@@ -265,6 +268,18 @@ def test_ingest_writes_the_batch(api, writer):
     (source_id, batch), = writer.batches
     assert batch[0].metric == "heart_rate_bpm"
     assert batch[0].value == 142
+
+
+def test_ingest_answers_only_once_the_batch_is_saved(db, writer):
+    # The agent drops a batch from its spool on a 200; a batch that isn't
+    # committed yet has to stay there.
+    _, conn = db
+    writer.flush = lambda timeout=10.0: False
+    writer.fault = "Ticker could not save data: disk full"
+    status, payload = Api(lambda: conn, writer).handle(
+        "POST", "/api/ingest", {}, ingest_body())
+    assert status == 503
+    assert payload["ok"] is False and "disk full" in payload["error"]
 
 
 def test_ingest_resolves_the_source_by_vendor_and_name(api, db):

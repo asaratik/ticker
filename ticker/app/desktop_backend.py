@@ -121,7 +121,7 @@ class Worker(QObject):
         if name == "garmin_code":
             return rt.garmin_code(**args)
         if name == "import":
-            return rt.start_import(args["path"])
+            return rt.start_import(args["path"], args.get("name"))
         if name == "backup":
             from ticker.db.backup import create
             destination = Path(args["path"]).resolve()

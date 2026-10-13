@@ -72,6 +72,7 @@ from urllib.parse import parse_qs, urlparse
 from ticker import config as tconfig
 from ticker.api.routes import Api
 from ticker.db import store
+from ticker.db.lock import DatabaseInUse, DatabaseLock
 from ticker.mcp import protocol as mcp_protocol
 from ticker.mcp.server import build as build_mcp
 
@@ -567,6 +568,11 @@ def main(argv=None) -> int:
         print(exc, file=sys.stderr)
         return 2
 
+    try:
+        lock = DatabaseLock(db_path).require()
+    except DatabaseInUse as exc:
+        print(exc, file=sys.stderr)
+        return 1
     server = build(db_path, host=args.host, port=args.port, token=args.token,
                    allow_remote=args.allow_remote)
     try:
@@ -574,6 +580,8 @@ def main(argv=None) -> int:
     except OSError as exc:
         print("cannot bind {}:{} - {}".format(args.host, args.port, exc),
               file=sys.stderr)
+        server.api.writer.close()
+        lock.release()
         return 1
 
     log.info("serving %s over %s", db_path, server.url)
@@ -600,7 +608,12 @@ def main(argv=None) -> int:
         # is the entire reason the signals are handled rather than left to
         # terminate the process.
         writer.rebuild_rollups()
-        writer.close()
+        saved = writer.close()
+        lock.release()
+    if not saved:
+        print("not all data could be saved before stopping; see the log",
+              file=sys.stderr)
+        return 1
     return 0
 
 

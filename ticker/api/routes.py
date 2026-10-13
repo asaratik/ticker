@@ -44,6 +44,10 @@ DEFAULT_WINDOW = timedelta(hours=24)
 # How far back /api/sessions looks when no window is given.
 DEFAULT_SESSION_WINDOW = timedelta(days=30)
 
+# How long POST /api/ingest waits for its batch to commit before answering
+# 503, which leaves the batch in the agent's spool for a retry.
+INGEST_SAVE_TIMEOUT_SEC = 10.0
+
 # Relative windows a dashboard can ask for without doing date arithmetic:
 # from=-7d. Grafana sends absolute times, but a curl at the command line
 # shouldn't have to.
@@ -256,6 +260,13 @@ class Api:
         self.writer.insert_observations(source_id, batch)
         for key in payload.get("closed_sessions") or []:
             self.writer.end_session(source_id, str(key))
+        # The agent deletes a batch from its spool on a 200, so answer only
+        # once the batch is committed. A 503 keeps it spooled for a retry,
+        # which the upsert makes harmless if it did land after all.
+        if not self.writer.flush(INGEST_SAVE_TIMEOUT_SEC):
+            return 503, {"ok": False,
+                         "error": getattr(self.writer, "fault", None)
+                         or "the batch could not be saved yet; retry"}
 
         self.ingested += len(batch)
         return 200, {"ok": True, "accepted": len(batch), "source_id": source_id}

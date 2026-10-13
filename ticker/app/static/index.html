@@ -4,13 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ticker</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/png" href="/static/ticker.png">
 <link rel="stylesheet" href="/static/app.css">
 <script src="/static/app.js" defer></script>
 </head>
 <body>
 <header class="bar">
-  <div class="brand"><span class="brand-mark" aria-hidden="true">&#9829;</span>Ticker</div>
+  <div class="brand"><img class="brand-icon" src="/static/ticker.png" alt="">Ticker</div>
   <div class="bar-status" id="app-status" role="status">Starting&hellip;</div>
   <button class="btn ghost" id="quit" type="button">Stop Ticker</button>
 </header>
@@ -115,6 +115,7 @@
       <details class="connect-item" id="connect-oura">
         <summary>Oura ring</summary>
         <form class="stack" id="oura-form">
+          <p class="hint">Oura sign-in and approval happen on Oura's website in a new browser tab. These fields are for an Oura API application you create, <strong>not your Oura account password</strong>.</p>
           <label class="field">
             <span class="field-label">OAuth client ID</span>
             <input id="oura-client-id" type="text" autocomplete="off" required>
@@ -128,7 +129,7 @@
             <input id="oura-name" type="text" maxlength="60" placeholder="Ring" autocomplete="off">
           </label>
           <div class="row">
-            <button class="btn primary" id="oura-button" type="submit">Connect Oura</button>
+            <button class="btn primary" id="oura-button" type="submit">Open Oura sign-in</button>
             <a class="linkish" href="https://cloud.ouraring.com/user/applications" target="_blank" rel="noopener noreferrer">Create an Oura application</a>
           </div>
           <p class="hint" id="oura-note">Register <code>http://127.0.0.1:8478/callback</code> as the redirect URI. The secret goes into your OS keyring, never the database.</p>
@@ -146,9 +147,9 @@
       </details>
 
       <details class="connect-item" id="connect-garmin">
-        <summary>Garmin Connect</summary>
+        <summary>Garmin Connect (unofficial)</summary>
         <form class="stack" id="garmin-form">
-          <p class="hint" id="garmin-note">Signs in the way Garmin's own app does, through the community garminconnect library: automatic, but unofficial, and Garmin has broken it before. Your password is used once and never stored. If it stops working, import Garmin's data export below &mdash; nothing already recorded is lost.</p>
+          <p class="hint" id="garmin-note">Garmin's browser-based OAuth is available to approved business integrations, not this personal connector. This unofficial option sends your email, password and any verification code to Garmin through the community garminconnect library. Ticker does not store your password; it keeps the resulting session in your OS keyring. If you prefer not to enter a password here, <a class="linkish" href="https://www.garmin.com/en-US/account/datamanagement/exportdata/" target="_blank" rel="noopener noreferrer">request a Garmin data export</a> and import it below.</p>
           <label class="field">
             <span class="field-label">Garmin email</span>
             <input id="garmin-email" type="email" autocomplete="username" required>
@@ -158,7 +159,7 @@
             <input id="garmin-password" type="password" autocomplete="current-password" required>
           </label>
           <div class="row">
-            <button class="btn primary" id="garmin-button" type="submit">Sign in to Garmin</button>
+            <button class="btn primary" id="garmin-button" type="submit">Use unofficial sign-in</button>
           </div>
         </form>
         <form class="stack" id="garmin-code-form" hidden>

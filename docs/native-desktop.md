@@ -17,10 +17,10 @@ From the repository, install dependencies once and launch:
 The existing `ticker` and `ticker-app` launchers also open the native window.
 `ticker desktop` is an explicit alias. `--web` retains the old browser UI;
 `--headless` retains service-only operation. Stop an existing browser/headless
-Ticker before opening the native app; the app refuses a duplicate service on
-its API port. A second native launch for the same database activates the first
-window instead of starting another writer. Different databases need different
-API ports (or `--port 0`).
+Ticker using the same database before opening the native app: all writable
+entry points share a per-database lock. A second native launch for that
+database activates the first window instead of starting another writer.
+Different databases need different API ports (or `--port 0`).
 
 The default database and OS-keyring credentials stay in their existing locations.
 For isolated experimentation, use `--db PATH_TO_NEW_DIRECTORY/preview.sqlite3`

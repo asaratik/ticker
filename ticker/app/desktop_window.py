@@ -4,12 +4,12 @@ import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Slot
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QIcon, QKeySequence
 from PySide6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QHeaderView, QInputDialog, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu, QMessageBox,
-    QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget, QStyle,
+    QPlainTextEdit, QPushButton, QScrollArea, QStackedWidget,
     QSystemTrayIcon, QTabBar, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 from PySide6.QtGui import QDesktopServices
@@ -17,6 +17,8 @@ from PySide6.QtGui import QDesktopServices
 from ticker.app.desktop_chart import Chart
 from ticker.app.desktop_data import chart_points, display_value, metric_label
 from ticker.model import parse_iso
+
+ICON_PATH = Path(__file__).parent / "static" / "ticker.png"
 
 
 def label(text="", size=None):
@@ -80,7 +82,7 @@ class Window(QMainWindow):
         self.setWindowTitle("Ticker")
         self.resize(1050, 800)
         self.setMinimumSize(720, 520)
-        self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon))
+        self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.tray = QSystemTrayIcon(self.windowIcon(), self)
         tray_menu = QMenu(self)
         tray_menu.addAction("Open Ticker", self.activate)
@@ -526,8 +528,23 @@ class Window(QMainWindow):
                   "fitbit": (), "garmin": (("email", "Email", False), ("password", "Password", True))}
         dialog = QDialog(self)
         dialog.setWindowTitle("Connect " + vendor.capitalize())
+        dialog.setMinimumWidth(480)
         body = QVBoxLayout(dialog)
-        body.addWidget(label("Credentials are kept in your OS keyring. Provider sign-in may open your browser."))
+        descriptions = {
+            "oura": "Oura sign-in and approval happen in your browser. Enter credentials from your own Oura API application below, not your Oura account password. Ticker keeps the application secret and access tokens in your OS keyring.",
+            "fitbit": "Fitbit sign-in and approval happen in your browser. Ticker keeps the resulting access tokens in your OS keyring.",
+            "garmin": "This is an unofficial connection, not Garmin's browser-based partner OAuth. Ticker sends your email, password and any verification code to Garmin through the community garminconnect library. It does not store your password; it keeps the resulting session in your OS keyring. If you prefer, import a Garmin data export instead.",
+        }
+        body.addWidget(label(descriptions[vendor]))
+        if vendor == "oura":
+            button("Create an Oura API application…", lambda: QDesktopServices.openUrl(
+                QUrl("https://cloud.ouraring.com/user/applications")), body)
+        elif vendor == "garmin":
+            def import_instead():
+                dialog.reject()
+                QTimer.singleShot(0, self.import_file)
+
+            button("Import a Garmin export instead…", import_instead, body)
         form = QFormLayout()
         inputs = {}
         for key, title, secret in (*fields[vendor], ("name", "Connection name", False)):
@@ -543,6 +560,9 @@ class Window(QMainWindow):
         if vendor == "oura":
             body.addWidget(label("Registered redirect: " + self.state.get("connect", {}).get("oura_redirect", "")))
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText({
+            "oura": "Open Oura sign-in", "fitbit": "Open Fitbit sign-in",
+            "garmin": "Use unofficial sign-in"}[vendor])
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         body.addWidget(buttons)

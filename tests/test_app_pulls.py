@@ -10,6 +10,7 @@ temporary database, fake connectors, short intervals.
 
 import threading
 import time
+from concurrent.futures import Future
 
 import pytest
 
@@ -38,15 +39,23 @@ class FakePull:
 class FakeWriter:
     def __init__(self):
         self.rollups = 0
+        self.sweeps = 0
 
     def record_sync(self, *args, **kwargs):
-        pass
+        future = Future()
+        future.set_result(True)
+        return future
+
+    mark_backfill_done = record_sync
 
     def insert_observations(self, source_id, batch):
         pass
 
     def rebuild_rollups(self):
         self.rollups += 1
+
+    def sweep_raw_payloads(self):
+        self.sweeps += 1
 
 
 def wait_for(predicate, timeout=5.0):
@@ -184,6 +193,13 @@ def test_a_vendor_this_version_cannot_sync_is_reported(start, db):
 def test_rollups_are_rebuilt_while_running(start):
     supervisor, writer = start(rollup_sec=0.2)
     wait_for(lambda: writer.rollups >= 1)
+
+
+def test_old_raw_payloads_are_swept_by_the_writer_not_the_loop(start):
+    # A DELETE on the pull loop could wait out the busy timeout and stall
+    # Sync now; the writer owns it instead.
+    supervisor, writer = start()
+    wait_for(lambda: writer.sweeps >= 1)
 
 
 def test_stopping_is_prompt_and_can_be_repeated(start, db):

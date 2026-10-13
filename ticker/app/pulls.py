@@ -27,7 +27,7 @@ import logging
 import threading
 from typing import Dict, Optional, Set
 
-from ticker.db import queries, store
+from ticker.db import store
 from ticker.ingest import scheduler, sync
 from ticker.ingest.normalizer import Normalizer
 from ticker.model import now_utc
@@ -111,7 +111,9 @@ class PullSupervisor:
         self._conn = store.connect(self.db_path, migrate_first=False)
         loop = asyncio.get_running_loop()
         last_rollup = loop.time()
-        self._sweep()
+        # On the writer, not here: a DELETE on this loop could wait out the
+        # busy timeout and stall Sync now behind it.
+        self.writer.sweep_raw_payloads()
         last_sweep = loop.time()
         try:
             while True:
@@ -123,7 +125,7 @@ class PullSupervisor:
                     self.writer.rebuild_rollups()
                 if now - last_sweep >= self.sweep_sec:
                     last_sweep = now
-                    self._sweep()
+                    self.writer.sweep_raw_payloads()
         finally:
             with self._lock:
                 tasks = list(self._tasks.values())
@@ -134,15 +136,6 @@ class PullSupervisor:
             await asyncio.gather(*tasks, return_exceptions=True)
             self._conn.close()
             self._conn = None
-
-    def _sweep(self) -> None:
-        try:
-            removed = queries.sweep_raw_payloads(self._conn)
-            if removed:
-                log.info("removed %d raw vendor responses past retention",
-                         removed)
-        except Exception:
-            log.exception("raw payload sweep failed")
 
     # -- the loop thread ---------------------------------------------------
 

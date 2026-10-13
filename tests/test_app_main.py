@@ -16,6 +16,7 @@ from ticker.api import server as apiserver
 from ticker.api.routes import Api
 from ticker.app import main as cli
 from ticker.db import queries, store
+from ticker.db.lock import DatabaseLock
 from ticker.mcp.server import build
 from ticker.model import iso_utc, now_utc
 
@@ -122,10 +123,19 @@ def test_status_says_what_is_connected(db, capsys, monkeypatch):
 
 def test_status_as_json(db, capsys, monkeypatch):
     monkeypatch.setattr(cli, "already_running", lambda url, timeout=1.5: True)
+    with DatabaseLock(db):
+        assert cli.status_main(["--db", str(db), "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["running"] is True and payload["url"]
+    assert payload["metrics"][0]["metric"] == "heart_rate_bpm"
+
+
+def test_status_does_not_take_the_http_port_as_ownership(db, capsys, monkeypatch):
+    # Something answering on 8477 is not proof that Ticker owns this file.
+    monkeypatch.setattr(cli, "already_running", lambda url, timeout=1.5: True)
     assert cli.status_main(["--db", str(db), "--json"]) == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["running"] is True
-    assert payload["metrics"][0]["metric"] == "heart_rate_bpm"
+    assert payload["running"] is False and payload["url"] is None
 
 
 def test_status_without_a_database_says_so(tmp_path, capsys):
@@ -161,14 +171,14 @@ def test_maintenance_commands_reach_their_modules(monkeypatch):
     assert calls == [["--all"]]
 
 
-def test_starting_twice_opens_the_running_one(monkeypatch):
+def test_a_ticker_on_the_port_is_not_assumed_to_own_this_database(monkeypatch, capsys):
     opened = []
     monkeypatch.setattr(cli, "already_running", lambda url, timeout=1.5: True)
     monkeypatch.setattr(cli, "open_page", lambda url, token=None: opened.append(url))
-    assert cli.main(["--web", "--port", "8123"]) == 0
-    assert opened == ["http://127.0.0.1:8123"]
-    assert cli.main(["--port", "8123", "--headless"]) == 0
-    assert len(opened) == 1
+    assert cli.main(["--web", "--port", "8123"]) == 1
+    assert cli.main(["--port", "8123", "--headless"]) == 1
+    assert not opened
+    assert "another Ticker service" in capsys.readouterr().err
 
 
 def test_serving_beyond_this_machine_needs_a_token(monkeypatch, capsys):
