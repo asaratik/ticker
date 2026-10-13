@@ -244,10 +244,14 @@ def test_an_unopenable_database_is_reported_and_never_blocks(tmp_path):
     writer = store.AsyncStore(unusable, error_queue=errors)
     try:
         writer.insert_observations(1, [hr(0, 70)])
-        # flush() has to return rather than hang on a dead writer.
-        assert writer.flush(timeout=5) is True
+        # flush() has to return rather than hang on a dead writer -- and
+        # say that nothing was saved rather than claim it was.
+        started = time.monotonic()
+        assert writer.flush(timeout=5) is False
+        assert time.monotonic() - started < 2
+        assert writer.fault and writer.dropped == 1
     finally:
-        writer.close()
+        assert writer.close() is False
 
     assert str(unusable) in errors.get_nowait()["message"]
 

@@ -22,6 +22,7 @@ from typing import List
 from ticker import config as tconfig
 from ticker.auth import secrets
 from ticker.db import store
+from ticker.db.lock import DatabaseInUse, DatabaseLock
 from ticker.ingest import scheduler
 from ticker.ingest.normalizer import Normalizer
 from ticker.model import now_utc
@@ -100,13 +101,20 @@ def _session_sink(writer, source_id):
 
 
 async def run(conn, writer, sources, *, once: bool = False,
-              interval: float = scheduler.PULL_INTERVAL_SEC) -> None:
+              interval: float = scheduler.PULL_INTERVAL_SEC) -> bool:
     if not sources:
         log.warning("no cloud accounts connected; connect one on Ticker's "
                     "page first")
-        return
+        return False
 
     tasks = []
+    failed = False
+
+    def report_error(message: str) -> None:
+        nonlocal failed
+        failed = True
+        log.warning("%s", message)
+
     for source_id, connector in sources:
         metrics = sorted(connector.capabilities())
         state = scheduler.PullState.load(conn, source_id, metrics)
@@ -116,7 +124,7 @@ async def run(conn, writer, sources, *, once: bool = False,
         tasks.append(asyncio.ensure_future(scheduler.run_pull_source(
             connector, normalizer, writer, state,
             now=now_utc, interval=interval,
-            on_error=lambda message: log.warning("%s", message),
+            on_error=report_error,
             max_cycles=1 if once else None)))
     try:
         await asyncio.gather(*tasks)
@@ -124,6 +132,7 @@ async def run(conn, writer, sources, *, once: bool = False,
         for task in tasks:
             task.cancel()
         raise
+    return not failed
 
 
 def main(argv=None) -> int:
@@ -142,23 +151,36 @@ def main(argv=None) -> int:
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s")
 
     db_path = args.db or tconfig.DB_PATH
-    conn = store.connect(db_path)
-    writer = store.AsyncStore(db_path, migrate_first=False)
+    lock = DatabaseLock(db_path)
     try:
-        sources = build_sources(conn, writer)
-        # asyncio.run, not get_event_loop().run_until_complete: the latter is
-        # deprecated without a running loop and errors outright on newer
-        # Pythons.
-        asyncio.run(run(conn, writer, sources, once=args.once,
-                        interval=args.interval))
-    except KeyboardInterrupt:
-        print("stopping")
+        lock.require()
+    except DatabaseInUse as exc:
+        print(exc, file=sys.stderr)
+        return 1
+    try:
+        conn = store.connect(db_path)
+        writer = store.AsyncStore(db_path, migrate_first=False)
+        synced = True
+        try:
+            sources = build_sources(conn, writer)
+            # asyncio.run, not get_event_loop().run_until_complete: the latter
+            # is deprecated without a running loop and errors outright on
+            # newer Pythons.
+            synced = asyncio.run(run(conn, writer, sources, once=args.once,
+                                     interval=args.interval))
+        except KeyboardInterrupt:
+            print("stopping")
+        finally:
+            # Commit whatever is still coalescing, then bring the rollups up
+            # to date over the days this run actually changed.
+            writer.rebuild_rollups()
+            saved = writer.close()
+            conn.close()
     finally:
-        # Commit whatever is still coalescing, then bring the rollups up to
-        # date over the days this run actually changed.
-        writer.rebuild_rollups()
-        writer.close()
-        conn.close()
+        lock.release()
+    if not saved or not synced:
+        print("sync did not complete successfully; see the log", file=sys.stderr)
+        return 1
     return 0
 
 

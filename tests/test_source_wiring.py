@@ -211,6 +211,50 @@ def test_adding_fitbit_without_a_client_id_explains_itself(conn, keyring,
     assert "TICKER_FITBIT_CLIENT_ID" in str(excinfo.value)
 
 
+def test_oura_browser_authorization_uses_pkce_and_keeps_the_secret(
+        conn, keyring, monkeypatch):
+    captured = {}
+
+    class Receiver:
+        redirect_uri = "http://127.0.0.1:8478/callback"
+
+        def __init__(self, port):
+            assert port == 8478
+
+        def start(self):
+            return self
+
+        def wait(self, state):
+            assert state
+            return "authorization-code"
+
+        def close(self):
+            pass
+
+    def exchange(token_url, client_id, code, verifier, redirect_uri, **kwargs):
+        captured["verifier"] = verifier
+        assert client_id == "app-id" and code == "authorization-code"
+        assert redirect_uri == Receiver.redirect_uri
+        assert kwargs == {"client_secret": "app-secret", "secret_in_body": True}
+        return oauth.TokenSet("access-token", "refresh-token")
+
+    monkeypatch.setattr(oauth, "LoopbackReceiver", Receiver)
+    monkeypatch.setattr(oauth, "exchange_code", exchange)
+    opened = []
+    source_id = setup.add_oauth(
+        conn, "oura", "Ring", open_browser=opened.append,
+        client_id="app-id", client_secret="app-secret")
+
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(opened[0]).query)
+    assert query["code_challenge"] == [oauth.challenge_for(captured["verifier"])]
+    assert query["code_challenge_method"] == ["S256"]
+    assert query["redirect_uri"] == [Receiver.redirect_uri]
+    ref = conn.execute("SELECT auth_ref FROM sources WHERE id = ?", (source_id,)).fetchone()[0]
+    saved = oauth.load_tokens(ref)
+    assert saved.access_token == "access-token"
+    assert saved.extra["oauth_client_secret"] == "app-secret"
+
+
 def test_a_vendor_with_no_oauth_flow_is_refused(conn, keyring):
     with pytest.raises(ValueError):
         setup.add_oauth(conn, "oura", "Ring", open_browser=_stub_browser)

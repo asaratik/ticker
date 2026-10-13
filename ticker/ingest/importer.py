@@ -20,6 +20,10 @@ is that its size is not the caller's problem.
 Re-importing the same export is safe and is the expected way to use this:
 the store dedupes on (source, metric, ts, external_id), so a later export
 that overlaps an earlier one updates what changed and adds what is new.
+
+An import writes through store.ImportWriter: at most a couple of batches in
+flight, so a huge file can't swamp the writer queue, and run_import returns
+only once every row it read is committed -- not when it was handed off.
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from pathlib import Path
 
 from ticker import config as tconfig
 from ticker.db import store
+from ticker.db.lock import DatabaseInUse, DatabaseLock
 from ticker.ingest.normalizer import Normalizer
 from ticker.sources.apple_health import AppleHealthSource
 from ticker.sources.base import PermanentError
@@ -73,12 +78,18 @@ def detect(path: Path) -> str:
 
 
 def run_import(conn, writer, vendor: str, path: Path,
-               display_name: str = "", progress=None) -> dict:
-    """Parse `path` and write what it yields. Returns a summary.
+               display_name: str = "", progress=None, cancel=None) -> dict:
+    """Parse `path`, write what it yields, and return a summary once all of
+    it has committed.
 
     The source row is created on first import and reused afterwards, so a
     year of monthly exports all land under one source rather than making a
     new one each time.
+
+    Raises store.StorageFault if the rows could not be saved, and
+    store.ImportCancelled if `cancel` (a threading.Event) was set; in both
+    cases whatever was already admitted is written, and a re-import of the
+    same file fills in the rest.
     """
     if vendor not in IMPORTERS:
         raise PermanentError("no importer for {!r}".format(vendor))
@@ -87,17 +98,19 @@ def run_import(conn, writer, vendor: str, path: Path,
 
     source_id = store.ensure_source(conn, "import", vendor, name)
     connector = factory(on_progress=progress)
+    bounded = writer.importer(cancel)
     if hasattr(connector, "on_session"):
         # Workouts in a file become sessions. Straight to the writer, which
         # applies work in order -- ahead of the readings that refer to them.
-        connector.on_session = lambda record: writer.begin_session(source_id, record)
-    normalizer = Normalizer(writer, source_id)
+        connector.on_session = lambda record: bounded.begin_session(source_id, record)
+    normalizer = Normalizer(bounded, source_id)
 
     started = time.monotonic()
     # feed() consumes the generator lazily, so the export is never all in
     # memory at once.
     normalizer.feed(connector.parse(path))
     normalizer.flush()
+    bounded.finish()
     elapsed = time.monotonic() - started
 
     return {
@@ -150,22 +163,35 @@ def main(argv=None) -> int:
         print("\r  {:,} records read...".format(count), end="", flush=True)
 
     db_path = args.db or tconfig.DB_PATH
-    conn = store.connect(db_path)
-    writer = store.AsyncStore(db_path, migrate_first=False)
+    lock = DatabaseLock(db_path)
     try:
-        summary = run_import(conn, writer, vendor, path,
-                             display_name=args.name,
-                             progress=None if args.quiet else progress)
-    except PermanentError as exc:
-        print("\n{}".format(exc), file=sys.stderr)
+        lock.require()
+    except DatabaseInUse as exc:
+        print(exc, file=sys.stderr)
         return 1
+    try:
+        conn = store.connect(db_path)
+        writer = store.AsyncStore(db_path, migrate_first=False)
+        try:
+            summary = run_import(conn, writer, vendor, path,
+                                 display_name=args.name,
+                                 progress=None if args.quiet else progress)
+        except (PermanentError, store.StorageFault) as exc:
+            print("\n{}".format(exc), file=sys.stderr)
+            return 1
+        finally:
+            # Commit whatever is still coalescing, then bring the rollups up
+            # to date over the days this import actually touched -- an import
+            # lands history, so its rollups are almost always stale.
+            writer.rebuild_rollups()
+            saved = writer.close()
+            conn.close()
     finally:
-        # Commit whatever is still coalescing, then bring the rollups up to
-        # date over the days this import actually touched -- an import lands
-        # history, so its rollups are almost always stale.
-        writer.rebuild_rollups()
-        writer.close()
-        conn.close()
+        lock.release()
+    if not saved:
+        print("\nthe import was not completely saved; see the log",
+              file=sys.stderr)
+        return 1
 
     if not args.quiet:
         print("\r" + " " * 40 + "\r", end="")

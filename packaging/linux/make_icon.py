@@ -1,23 +1,5 @@
 #!/usr/bin/env python3
-"""
-Generate packaging/linux/ticker.png, the AppImage's icon.
-
-The AppImage format requires an icon that matches the desktop entry's
-`Icon=` key -- appimagetool refuses to build without one -- and this project
-had no icon asset at all, having used PyInstaller's default everywhere else.
-
-Written as a generator rather than a committed-once binary so the icon is
-reproducible and reviewable: a PNG in a diff is opaque, and nobody can tell
-whether the one in the tree is the one this script would produce. Run it and
-compare if you ever need to know.
-
-Pure stdlib on purpose. Pillow would render this more nicely, but adding an
-imaging dependency to build a 256px icon -- one that would then have to be
-excluded from the frozen app -- is a bad trade. zlib and struct can write a
-PNG perfectly well.
-
-    python packaging/linux/make_icon.py
-"""
+"""Generate the shared Ticker icon for Linux, Windows, macOS, and the app."""
 
 import math
 import struct
@@ -25,7 +7,11 @@ import zlib
 from pathlib import Path
 
 SIZE = 256
-OUT = Path(__file__).with_name("ticker.png")
+ROOT = Path(__file__).resolve().parents[2]
+LINUX_ICON = Path(__file__).with_name("ticker.png")
+APP_ICON = ROOT / "ticker" / "app" / "static" / "ticker.png"
+WINDOWS_ICON = ROOT / "packaging" / "windows" / "ticker.ico"
+MACOS_ICON = ROOT / "packaging" / "macos" / "ticker.icns"
 
 BACKGROUND = (27, 36, 48)      # slate, dark enough for a light or dark shelf
 TRACE = (229, 72, 77)          # the same red the live reading uses
@@ -67,26 +53,28 @@ def _blend(bottom, top, alpha):
     return tuple(int(round(b + (t - b) * alpha)) for b, t in zip(bottom, top))
 
 
-def render():
+def render(size=SIZE):
     """Render the icon as RGBA rows.
 
     Coverage is computed as a smooth distance rather than a hard test, which
     is enough antialiasing to keep the diagonal strokes from looking like a
     staircase at 256px.
     """
+    scale = size / SIZE
+    points = [(ax * scale, ay * scale) for ax, ay in TRACE_POINTS]
     rows = []
-    for y in range(SIZE):
+    for y in range(size):
         row = bytearray()
-        for x in range(SIZE):
+        for x in range(size):
             px, py = x + 0.5, y + 0.5
 
             background_cover = _clamp(
-                _rounded_rect_coverage(px, py, SIZE, CORNER_RADIUS) + 0.5)
+                _rounded_rect_coverage(px, py, size, CORNER_RADIUS * scale) + 0.5)
 
             nearest = min(
                 _distance_to_segment(px, py, ax, ay, bx, by)
-                for (ax, ay), (bx, by) in zip(TRACE_POINTS, TRACE_POINTS[1:]))
-            trace_cover = _clamp(TRACE_WIDTH / 2.0 - nearest + 0.5)
+                for (ax, ay), (bx, by) in zip(points, points[1:]))
+            trace_cover = _clamp(TRACE_WIDTH * scale / 2.0 - nearest + 0.5)
 
             colour = _blend(BACKGROUND, TRACE, trace_cover)
             alpha = int(round(255 * background_cover))
@@ -104,24 +92,54 @@ def _chunk(kind: bytes, payload: bytes) -> bytes:
             + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF))
 
 
-def write_png(rows, path: Path) -> None:
-    """Write 8-bit RGBA rows as a PNG.
+def png_bytes(rows, size=SIZE) -> bytes:
+    """Encode 8-bit RGBA rows as a PNG.
 
     Filter type 0 (none) on every scanline: the image is tiny and zlib
     handles it fine, and a filter-free file is one less thing to get wrong.
     """
     raw = b"".join(b"\x00" + row for row in rows)
-    header = struct.pack(">IIBBBBB", SIZE, SIZE, 8, 6, 0, 0, 0)
-    png = (b"\x89PNG\r\n\x1a\n"
-           + _chunk(b"IHDR", header)
-           + _chunk(b"IDAT", zlib.compress(raw, 9))
-           + _chunk(b"IEND", b""))
-    path.write_bytes(png)
+    header = struct.pack(">IIBBBBB", size, size, 8, 6, 0, 0, 0)
+    return (b"\x89PNG\r\n\x1a\n"
+            + _chunk(b"IHDR", header)
+            + _chunk(b"IDAT", zlib.compress(raw, 9))
+            + _chunk(b"IEND", b""))
+
+
+def write_png(rows, path: Path) -> None:
+    path.write_bytes(png_bytes(rows))
+
+
+def ico_bytes(images: dict[int, bytes]) -> bytes:
+    entries = []
+    payloads = []
+    offset = 6 + 16 * len(images)
+    for size, png in images.items():
+        entries.append(struct.pack("<BBBBHHII", size if size < 256 else 0,
+                                   size if size < 256 else 0, 0, 0, 1, 32,
+                                   len(png), offset))
+        payloads.append(png)
+        offset += len(png)
+    return struct.pack("<HHH", 0, 1, len(images)) + b"".join(entries + payloads)
+
+
+def icns_bytes(images: dict[int, bytes]) -> bytes:
+    kinds = {16: b"icp4", 32: b"icp5", 64: b"icp6", 128: b"ic07",
+             256: b"ic08", 512: b"ic09", 1024: b"ic10"}
+    chunks = [kinds[size] + struct.pack(">I", len(png) + 8) + png
+              for size, png in images.items()]
+    return b"icns" + struct.pack(">I", 8 + sum(map(len, chunks))) + b"".join(chunks)
 
 
 def main() -> int:
-    write_png(render(), OUT)
-    print("wrote {} ({} bytes)".format(OUT, OUT.stat().st_size))
+    sizes = (16, 24, 32, 48, 64, 128, 256, 512, 1024)
+    images = {size: png_bytes(render(size), size) for size in sizes}
+    LINUX_ICON.write_bytes(images[SIZE])
+    APP_ICON.write_bytes(images[SIZE])
+    WINDOWS_ICON.write_bytes(ico_bytes({size: images[size] for size in sizes if size <= 256}))
+    MACOS_ICON.write_bytes(icns_bytes({size: images[size] for size in sizes if size != 24 and size != 48}))
+    for path in (LINUX_ICON, APP_ICON, WINDOWS_ICON, MACOS_ICON):
+        print("wrote {} ({} bytes)".format(path, path.stat().st_size))
     return 0
 
 

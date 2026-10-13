@@ -6,6 +6,8 @@ import sys
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -13,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6.QtWidgets")
 from PySide6.QtCore import QObject, QProcess, Signal
 from PySide6.QtGui import QCloseEvent, QFont, QFontDatabase
-from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QPushButton, QSystemTrayIcon
 
 from ticker.app import main as cli
 from ticker.app.desktop import Instance
@@ -166,12 +168,26 @@ def window(qt_app, monkeypatch):
 
 def test_first_launch_has_one_window_and_honest_empty_state(window):
     win, controller = window
+    assert not win.windowIcon().isNull()
+    assert not win.tray.icon().isNull()
     controller.snapshot.emit({"metrics": [], "sources": [], "latest": []})
     assert win.welcome.isVisible()
     assert not win.summaries.isVisible()
     assert win.nav.count() == 6 and win.pages.count() == 6
     assert not win.record_button.isEnabled()
     assert win.grab().isNull() is False
+
+
+def test_windows_taskbar_identity_is_set_for_ticker(monkeypatch):
+    import ctypes
+    from ticker.app import desktop
+
+    setter = Mock(return_value=0)
+    monkeypatch.setattr(desktop, "sys", SimpleNamespace(platform="win32"))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda name: SimpleNamespace(
+        SetCurrentProcessExplicitAppUserModelID=setter), raising=False)
+    desktop.set_windows_taskbar_identity()
+    setter.assert_called_once_with(desktop.APP_USER_MODEL_ID)
 
 
 def test_toolbar_navigates_without_opening_a_browser(window, monkeypatch):
@@ -194,6 +210,29 @@ def test_connection_rows_offer_native_sync_and_disconnect_actions(window):
     assert [action.text() for action in actions] == ["Sync", "Disconnect"]
     actions[0].click()
     assert controller.calls[-1] == ("sync", {"source_id": 3})
+
+
+def test_provider_dialogs_explain_where_credentials_go(window, monkeypatch):
+    win, controller = window
+    seen = {}
+
+    def inspect(dialog):
+        seen[dialog.windowTitle()] = (
+            " ".join(item.text() for item in dialog.findChildren(QLabel)),
+            [item.text() for item in dialog.findChildren(QPushButton)])
+        return QDialog.DialogCode.Rejected
+
+    monkeypatch.setattr(QDialog, "exec", inspect)
+    win.connect_provider("oura")
+    win.connect_provider("garmin")
+
+    oura_text, oura_buttons = seen["Connect Oura"]
+    garmin_text, garmin_buttons = seen["Connect Garmin"]
+    assert "not your Oura account password" in oura_text
+    assert "Open Oura sign-in" in oura_buttons
+    assert "unofficial connection" in garmin_text
+    assert "Import a Garmin export instead…" in garmin_buttons
+    assert not controller.calls
 
 
 def test_late_trend_response_does_not_replace_current_selection(window):
@@ -328,6 +367,43 @@ def test_native_backup_refuses_existing_files(data, qt_app, tmp_path):
     assert existing.read_bytes() == b"keep me"
     with pytest.raises(ValueError):
         worker.dispatch("backup", {"path": str(data[0])})
+
+
+APPLE_EXPORT = """<?xml version="1.0" encoding="UTF-8"?>
+<HealthData locale="en_US">
+ <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Watch" unit="count/min"
+  value="61" startDate="2026-05-01 07:00:00 +0000" endDate="2026-05-01 07:00:00 +0000"/>
+</HealthData>
+"""
+
+
+def test_native_import_dispatch_matches_the_real_runtime(qt_app, tmp_path, monkeypatch):
+    # A fake runtime hid a signature mismatch here once; drive the real one.
+    monkeypatch.delenv("HRM_SOURCE", raising=False)
+    export = tmp_path / "export.xml"
+    export.write_text(APPLE_EXPORT, encoding="utf-8")
+    runtime = Runtime(tmp_path / "native.sqlite3", host="127.0.0.1", port=0,
+                      builders={}, make_source=lambda kind, queue, address: Sensor(queue))
+    runtime.start()
+    try:
+        worker = Worker(lambda: None)
+        worker.runtime = runtime
+        reply = worker.dispatch("import", {"path": str(export)})
+        assert "job_id" in reply
+
+        def finished():
+            return [job for job in runtime.state()["jobs"]
+                    if job["kind"] == "import" and job["status"] != "running"]
+        wait_for(finished)
+        assert finished()[0]["status"] == "done", finished()
+        assert runtime.writer.flush()
+    finally:
+        runtime.stop()
+    conn = sqlite3.connect(str(tmp_path / "native.sqlite3"))
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM observations").fetchone() == (1,)
+    finally:
+        conn.close()
 
 
 class Sensor:

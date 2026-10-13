@@ -7,7 +7,8 @@ Two ways in:
   drains the days a commit actually changed. That is the normal path and
   costs nothing when nothing changed.
 * In bulk, from here -- for a database whose observations predate rollups
-  existing, or after changing TICKER_TZ, which re-buckets every day.
+  existing, or after changing TICKER_TZ, which re-buckets every day. It
+  clears the matching rollup_dirty markers in the same transaction.
 
     python -m ticker.db.rollup --all
     python -m ticker.db.rollup --all --metric heart_rate_bpm
@@ -27,6 +28,7 @@ from typing import Optional
 
 from ticker import config as tconfig
 from ticker.db import queries, store
+from ticker.db.lock import DatabaseInUse, DatabaseLock
 
 
 def rebuild_all(conn, metric: Optional[str] = None, zone=None) -> int:
@@ -37,6 +39,10 @@ def rebuild_all(conn, metric: Optional[str] = None, zone=None) -> int:
     conn.execute("BEGIN")
     try:
         written = queries.rebuild_days(conn, days, zone)
+        if metric_id is None:
+            conn.execute("DELETE FROM rollup_dirty")
+        else:
+            conn.execute("DELETE FROM rollup_dirty WHERE metric_id = ?", (metric_id,))
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -62,6 +68,11 @@ def main(argv=None) -> int:
         print("no database at {}".format(db_path), file=sys.stderr)
         return 1
 
+    try:
+        lock = DatabaseLock(db_path).require()
+    except DatabaseInUse as exc:
+        print(exc, file=sys.stderr)
+        return 1
     conn = store.connect(db_path)
     try:
         started = time.monotonic()
@@ -75,6 +86,7 @@ def main(argv=None) -> int:
             print("  {:20s} {:>5} days  {} .. {}".format(*row))
     finally:
         conn.close()
+        lock.release()
     return 0
 
 

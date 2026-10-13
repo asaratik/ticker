@@ -22,7 +22,7 @@ from ticker import config as tconfig
 from ticker.app.runtime import Runtime
 from ticker.auth import secrets, setup
 from ticker.db import store
-from ticker.model import iso_utc, now_utc
+from ticker.model import Observation, iso_utc, now_utc
 
 
 class FakePull:
@@ -166,6 +166,9 @@ def query(path, sql):
 def test_the_page_and_its_state_are_served(app):
     status, page = call(app.url + "/")
     assert status == 200 and b"Ticker" in page
+    assert b'/static/ticker.png' in page
+    status, icon = call(app.url + "/static/ticker.png")
+    assert status == 200 and icon.startswith(b"\x89PNG\r\n\x1a\n")
     status, state = call(app.url + "/ui/state")
     assert status == 200
     assert state["app"]["url"] == app.url
@@ -202,6 +205,18 @@ def test_connecting_oura_on_the_page_stores_the_token_and_syncs(app):
     _, state = call(app.url + "/ui/state")
     ring = next(s for s in state["sources"] if s["id"] == source_id)
     assert ring["vendor"] == "oura" and "syncing" in ring
+
+
+def test_oura_sign_in_connection_failure_finishes_the_job(app, monkeypatch):
+    def fail_connection(*args, **kwargs):
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(store, "connect", fail_connection)
+    status, reply = call(app.url + "/ui/connect/oura", "POST", {
+        "client_id": "client", "client_secret": "s3cret"})
+    assert status == 502 and "database unavailable" in reply["error"]
+    assert any(job.kind == "oura" and job.status == "failed"
+               for job in app.runtime._jobs)
 
 
 def test_sync_now_on_the_read_api_reaches_the_scheduler(app):
@@ -314,6 +329,48 @@ def test_an_apple_health_export_imports_in_the_background(app, tmp_path):
     assert query(app.path, "SELECT COUNT(*) FROM observations o JOIN sources s "
                            "ON s.id = o.source_id WHERE s.vendor = 'apple_health'"
                  ) == [(2,)]
+
+
+def test_an_import_connection_failure_finishes_the_job(app, tmp_path, monkeypatch):
+    export = tmp_path / "export.xml"
+    export.write_text(EXPORT, encoding="utf-8")
+
+    def fail_connection(*args, **kwargs):
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(store, "connect", fail_connection)
+    assert call(app.url + "/ui/import", "POST", {"path": str(export)})[0] == 200
+
+    def failed():
+        _, state = call(app.url + "/ui/state")
+        return [job for job in state["jobs"] if job["kind"] == "import"
+                and job["status"] == "failed"]
+
+    job, = wait_for(failed) and failed()
+    assert "database unavailable" in job["detail"]
+
+
+def test_a_storage_fault_is_app_wide_and_blocks_setup_writes(app, monkeypatch):
+    monkeypatch.setattr(store, "UPSERT_OBSERVATION", "INSERT INTO nowhere VALUES (1)")
+    app.runtime.writer.insert_observations(1, [Observation("heart_rate_bpm", now_utc(), 70.0)])
+    assert app.runtime.writer.flush() is False
+    _, state = call(app.url + "/ui/state")
+    assert "could not save" in state["storage"]["fault"]
+    assert state["storage"]["dropped"] == 1
+    # Writes through separate connections are refused too.
+    status, reply = call(app.url + "/ui/disconnect/1", "POST", {})
+    assert status == 503 and "could not save" in reply["error"]
+
+    monkeypatch.undo()
+    assert app.runtime.retry_storage() == {"ok": True, "fault": None}
+
+
+def test_stopping_reports_data_it_could_not_save(start, monkeypatch):
+    app = start()
+    monkeypatch.setattr(store, "UPSERT_OBSERVATION", "INSERT INTO nowhere VALUES (1)")
+    app.runtime.writer.insert_observations(1, [Observation("heart_rate_bpm", now_utc(), 70.0)])
+    with pytest.raises(store.StorageFault):
+        app.runtime.stop()
 
 
 def test_importing_a_file_that_is_not_there_is_refused(app, tmp_path):
@@ -454,6 +511,20 @@ def test_garmin_sign_in_waits_for_the_code_then_connects(app):
     wait_for(connected)
     assert "garmin:Garmin" in app.kept
     assert not any("hunter2" in value for value in app.kept.values())
+
+
+def test_garmin_sign_in_connection_failure_finishes_the_job(app, monkeypatch):
+    app.runtime._garmin_library = garmin_library()
+
+    def fail_connection(*args, **kwargs):
+        raise OSError("database unavailable")
+
+    monkeypatch.setattr(store, "connect", fail_connection)
+    status, reply = call(app.url + "/ui/connect/garmin", "POST",
+                         {"email": "me@example.com", "password": "hunter2"})
+    assert status == 200 and reply["result"]["status"] == "failed"
+    assert "database unavailable" in reply["result"]["detail"]
+    assert app.runtime._garmin_codes == {}
 
 
 def test_garmin_sign_in_explains_itself_where_it_cannot_run(app):

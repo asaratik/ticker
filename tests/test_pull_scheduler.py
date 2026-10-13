@@ -11,6 +11,7 @@ failure re-fetches rather than skips, and backfill is resumable.
 """
 
 import asyncio
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -66,15 +67,27 @@ class FakePull:
                 for i in range(self.per_window)]
 
 
+def acknowledged():
+    future = Future()
+    future.set_result(True)
+    return future
+
+
 class RecordingStore:
     def __init__(self):
         self.syncs = []
+        self.finished = []
 
     def record_sync(self, source_id, metric, watermark_ts=None, cursor=None,
                     last_error=None, succeeded=True):
         self.syncs.append({"metric": metric, "watermark": watermark_ts,
                            "cursor": cursor, "error": last_error,
                            "succeeded": succeeded})
+        return acknowledged()
+
+    def mark_backfill_done(self, source_id, metric):
+        self.finished.append(metric)
+        return acknowledged()
 
     def insert_observations(self, source_id, batch):
         pass

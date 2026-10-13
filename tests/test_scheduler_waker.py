@@ -8,6 +8,7 @@ into two syncs and, against a rate limit, into a 429.
 """
 
 import asyncio
+from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
 
 from ticker.ingest import scheduler
@@ -48,7 +49,11 @@ class NullNormalizer:
 
 class RecordingStore:
     def record_sync(self, *args, **kwargs):
-        pass
+        future = Future()
+        future.set_result(True)
+        return future
+
+    mark_backfill_done = record_sync
 
 
 def test_a_waker_is_idle_only_while_it_waits():

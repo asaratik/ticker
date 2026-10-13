@@ -135,8 +135,9 @@ class PullState:
     """One pull source's progress, in memory and in sync_state.
 
     The scheduler is the only writer of a source's watermarks, so it keeps
-    them here and persists after each successful window rather than reading
-    back what it just wrote.
+    them here rather than reading back what it just wrote -- and changes
+    them only after the store has acknowledged the commit, so memory never
+    runs ahead of the database either.
     """
 
     def __init__(self, source_id: int, metrics: Sequence[str],
@@ -158,20 +159,27 @@ class PullState:
         is where its progress lives.
         """
         stored = queries.sync_state(conn, source_id)
-        watermarks, cursors = {}, {}
+        watermarks, cursors, done = {}, {}, set()
         for metric in metrics:
             row = stored.get(metric)
             if not row:
                 continue
             if row.get("watermark_ts"):
                 watermarks[metric] = parse_iso(row["watermark_ts"])
+            if row.get("backfill_done"):
+                done.add(metric)
             cursor = row.get("cursor")
             if cursor:
                 try:
                     cursors[metric] = parse_iso(cursor)
                 except ValueError:
                     pass       # a cursor this version doesn't understand
-        return cls(source_id, metrics, watermarks, cursors)
+        # A metric with neither a cursor nor `done` -- including every one
+        # saved before completion was persisted -- backfills from the top
+        # once. Re-fetching is safe; the unique index makes it free.
+        state = cls(source_id, metrics, watermarks, cursors)
+        state.done = done
+        return state
 
 
 class Waker:
@@ -282,7 +290,7 @@ async def _backfill_chunk(source, normalizer, store, state, now, chunk,
     floor = now() - horizon
     edge = state.backfill.get(metric) or now()
     if edge <= floor:
-        state.done.add(metric)
+        await _finish_backfill(source, store, state, metric, on_error)
         return
 
     since = max(edge - chunk, floor)
@@ -292,10 +300,27 @@ async def _backfill_chunk(source, normalizer, store, state, now, chunk,
     if count is None:
         return
     if count == 0:
-        state.done.add(metric)
-        store.record_sync(state.source_id, metric, cursor=None)
+        await _finish_backfill(source, store, state, metric, on_error)
     else:
         state.backfill[metric] = since
+
+
+async def _finish_backfill(source, store, state, metric, on_error) -> None:
+    """Persist that a metric's history is complete, then remember it."""
+    if await _acknowledged(store.mark_backfill_done(state.source_id, metric),
+                           source, metric, on_error):
+        state.done.add(metric)
+
+
+async def _acknowledged(future, source, metric, on_error) -> bool:
+    """Wait -- without blocking the loop -- for the writer to commit."""
+    try:
+        await asyncio.wrap_future(future)
+    except Exception as exc:
+        _report(on_error, "{} {}: progress not saved: {}".format(
+            source.vendor, metric, exc))
+        return False
+    return True
 
 
 async def _fetch_window(source, normalizer, store, state, metric, since, until,
@@ -331,14 +356,19 @@ async def _fetch_window(source, normalizer, store, state, metric, since, until,
 
     accepted = normalizer.feed(observations)
     normalizer.flush()
-    # The watermark moves only here, after a window completed end to end. A
-    # partial failure returned above and left it untouched, so the next run
-    # re-fetches -- free, because of the unique index.
+    # The watermark moves only here, after a window completed end to end and
+    # the store committed it in one transaction with the window's rows. A
+    # partial failure, or a commit that failed, leaves it untouched -- in the
+    # database and in memory -- so the next run re-fetches the same window,
+    # which the unique index makes free.
+    if not await _acknowledged(
+            store.record_sync(state.source_id, metric, watermark_ts=advance_to,
+                              cursor=iso_utc(cursor) if cursor else None,
+                              last_error=None, succeeded=True),
+            source, metric, on_error):
+        return None
     if advance_to is not None:
         state.watermarks[metric] = advance_to
-    store.record_sync(state.source_id, metric, watermark_ts=advance_to,
-                      cursor=iso_utc(cursor) if cursor else None,
-                      last_error=None, succeeded=True)
     return accepted
 
 

@@ -32,6 +32,9 @@ class FakeWriter:
     def end_session(self, *args, **kwargs):
         pass
 
+    def flush(self, timeout=10.0):
+        return True
+
 
 def get(url, token=None, method="GET", data=None):
     """Request a URL, returning (status, parsed body) instead of raising."""

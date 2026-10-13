@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple
 
 from ticker import config as tconfig
 from ticker.db import queries, store
+from ticker.db.lock import DatabaseInUse, DatabaseLock
 from ticker.ingest.derive import RmssdWindow
 from ticker.model import iso_utc, now_iso, parse_iso
 
@@ -97,6 +98,11 @@ def main(argv=None) -> int:
         print("no database at {}".format(db_path), file=sys.stderr)
         return 1
 
+    try:
+        lock = DatabaseLock(db_path).require()
+    except DatabaseInUse as exc:
+        print(exc, file=sys.stderr)
+        return 1
     conn = store.connect(db_path)
     try:
         started = time.monotonic()
@@ -104,10 +110,10 @@ def main(argv=None) -> int:
         print("{} hrv_rmssd_ms observations changed in {:.2f}s".format(
             written, time.monotonic() - started))
         if written:
-            print("run 'python -m ticker.db.rollup --all' to update the "
-                  "daily rollups")
+            print("the daily rollups catch up the next time Ticker starts")
     finally:
         conn.close()
+        lock.release()
     return 0
 
 
