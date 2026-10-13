@@ -36,7 +36,7 @@ import queue
 import sqlite3
 import threading
 import time
-from concurrent.futures import Future, TimeoutError as FutureTimeout
+from concurrent.futures import Future, InvalidStateError, TimeoutError as FutureTimeout
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -465,7 +465,7 @@ class AsyncStore:
                 return None
             if op[0] == "probe":
                 conn = self._open()
-                op[1].set_result(conn is not None and self._fault is None)
+                self._complete_future(op[1], result=conn is not None and self._fault is None)
                 if conn is not None:
                     return conn
                 continue
@@ -501,7 +501,7 @@ class AsyncStore:
                 self._drained = self._guarded(conn, self._commit_pending)
                 return
             if kind == "probe":
-                op[1].set_result(self._probe(conn))
+                self._complete_future(op[1], result=self._probe(conn))
                 continue
             if self._fault is not None:
                 self._refuse(op)
@@ -710,10 +710,22 @@ class AsyncStore:
 
     def _settle(self, future: Future, ok: bool) -> None:
         if ok:
-            future.set_result(True)
+            self._complete_future(future, result=True)
         else:
-            future.set_exception(StorageFault(
+            self._complete_future(future, error=StorageFault(
                 self._fault or "progress could not be saved"))
+
+    @staticmethod
+    def _complete_future(future: Future, *, result: Optional[bool] = None,
+                         error: Optional[BaseException] = None) -> None:
+        try:
+            if error is None:
+                future.set_result(result)
+            else:
+                future.set_exception(error)
+        except InvalidStateError:
+            if not future.cancelled():
+                raise
 
     def _checkpoint_metric(self, metric: str, future: Future) -> Optional[int]:
         metric_id = self._metrics.get(metric)
@@ -721,7 +733,8 @@ class AsyncStore:
             self._rejected += 1
             self._failed_since_flush = True
             self._report("Unknown metric {!r} in sync state".format(metric))
-            future.set_exception(ValueError("unknown metric {!r}".format(metric)))
+            self._complete_future(future, error=ValueError(
+                "unknown metric {!r}".format(metric)))
         return metric_id
 
     def _refuse(self, op: tuple) -> None:
@@ -735,12 +748,13 @@ class AsyncStore:
             if op[4] is not None:
                 op[4](False)
         elif kind in ("sync_state", "backfill_done"):
-            op[-1].set_exception(StorageFault(self._fault or "storage is unavailable"))
+            self._complete_future(op[-1], error=StorageFault(
+                self._fault or "storage is unavailable"))
         elif kind == "flush":
             op[2].append(False)
             op[1].set()
         elif kind == "probe":
-            op[1].set_result(False)
+            self._complete_future(op[1], result=False)
 
     def _resolve(self, source_id: int,
                  batch: Iterable[Observation]) -> List[tuple]:

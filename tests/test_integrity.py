@@ -115,6 +115,35 @@ def test_a_checkpoint_commits_with_the_rows_it_covers(db, run):
         writer.close()
 
 
+def test_cancelled_checkpoint_waiter_does_not_fault_the_writer(db, monkeypatch):
+    path, conn, source_id = db
+    writer = store.AsyncStore(path, migrate_first=False)
+    entered = threading.Event()
+    release = threading.Event()
+    record_sync = writer._record_sync
+
+    def wait_before_checkpoint(*args):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError("checkpoint was not released")
+        return record_sync(*args)
+
+    monkeypatch.setattr(writer, "_record_sync", wait_before_checkpoint)
+    try:
+        writer.insert_observations(source_id, [Observation(HR, NOW, 70.0)])
+        future = writer.record_sync(source_id, HR, watermark_ts=NOW)
+        assert entered.wait(5)
+        assert future.cancel()
+        release.set()
+        assert writer.flush(5)
+        assert writer.fault is None
+        assert count(conn) == 1
+        assert saved_state(conn, source_id)["watermark_ts"] is not None
+    finally:
+        release.set()
+        writer.close()
+
+
 def test_a_failed_commit_leaves_progress_alone_and_retries_the_window(db, run, monkeypatch):
     path, conn, source_id = db
     writer = store.AsyncStore(path, coalesce_rows=200, migrate_first=False)
